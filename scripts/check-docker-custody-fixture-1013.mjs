@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Docker/Linux-UID/PTY acceptance fixture for the publication-only local OS
-// custody implementation (DR-0238,
+// Docker/Linux-UID/PTY acceptance fixture for the local OS custody
+// implementation (DR-0238,
 // docs/architecture/local-publication-custody.md). This is Docker-only
 // capability/behavior evidence for genuinely distinct real Linux UIDs and a
 // real pseudo-terminal, not a Rust unit-test substitute and not a claim that
@@ -27,6 +27,11 @@
 // copy of key bytes happens inside a custody-UID child process; only the
 // child's exit status crosses that boundary.
 //
+// An opt-in --fee-claim-source selects the protected ZeroShare slice from
+// DR-0257. The source is produced only by the genuine sealed-source
+// successor acceptance, after its host prepares the claim. This mode uses
+// the same isolated allocation and UIDs, and does not run the other families.
+//
 // This script never executes anything itself at import time beyond Docker
 // CLI subprocesses and `ldd` on two already-compiled host paths it is given;
 // it builds, launches, and tears down exactly one container.
@@ -40,6 +45,10 @@
 //                                  contains the fixture-only ignored probe
 //                                  `custody::client::tests::fixture_distinct_uid_round_trip`
 //                                  added to apps/cli/src/custody/client.rs.
+//   --fee-claim-source <absolute directory>  optional genuine sealed-source
+//                                  ZeroShare package; in this mode the test
+//                                  binary may be the same CLI binary because
+//                                  no test-only probe is invoked.
 //
 // Exact owning command (see this file's own header comment for how to
 // obtain --test-binary; this is a separately selected Docker profile):
@@ -94,6 +103,7 @@ function parseArgs(argv) {
     if (flag === '--cli-binary') out.cliBinary = value;
     else if (flag === '--test-binary') out.testBinary = value;
     else if (flag === '--profile') out.profile = value;
+    else if (flag === '--fee-claim-source') out.feeClaimSource = value;
     else throw new Error(`unknown or incomplete argument: ${flag ?? '(missing)'}`);
   }
   if (out.profile === 'default') out.profile = 'publication-genesis';
@@ -112,6 +122,16 @@ function parseArgs(argv) {
     }
     assertMountSafePath(label_, path);
   }
+  if (out.feeClaimSource) {
+    if (out.profile !== 'publication-genesis') {
+      throw new Error('--fee-claim-source cannot be combined with a different --profile');
+    }
+    if (!out.feeClaimSource.startsWith('/') || !existsSync(out.feeClaimSource) ||
+        !statSync(out.feeClaimSource).isDirectory()) {
+      throw new Error('--fee-claim-source must be an existing absolute directory');
+    }
+    assertMountSafePath('--fee-claim-source', out.feeClaimSource);
+  }
   return out;
 }
 
@@ -124,7 +144,7 @@ function assertMountSafePath(label_, path) {
   }
 }
 
-const { cliBinary, testBinary, profile } = parseArgs(process.argv.slice(2));
+const { cliBinary, testBinary, profile, feeClaimSource } = parseArgs(process.argv.slice(2));
 
 // ---- resolving the exact dynamic-linker/shared-library closure via `ldd` ----
 //
@@ -184,6 +204,7 @@ const binds = [
   `type=bind,source=${testBinary},target=/mnt/bin/harness,readonly`,
   `type=bind,source=${closure.interpreter},target=/mnt/libs/ld.so,readonly`,
   ...[...closure.libs.values()].map((path) => `type=bind,source=${path},target=/mnt/libs/${basename(path)},readonly`),
+  ...(feeClaimSource ? [`type=bind,source=${feeClaimSource},target=/mnt/fee,readonly`] : []),
 ];
 
 // ---- the embedded fixture probe: every real Linux-UID/PTY/socket/filesystem ----
@@ -195,7 +216,7 @@ const binds = [
 // invokes by its exact name, and docs/architecture/local-publication-custody.md
 // for the recipe this follows.
 
-// Explanatory probe notes stay outside its fixed 256 KiB raw transport budget.
+// Explanatory probe notes stay outside its fixed 272 KiB raw transport budget.
 // The embedded program is sent as written; no runtime comment stripping is used.
 //
 // CREATE_INSTANCE_SEED_HEX:
@@ -456,7 +477,7 @@ const binds = [
 //    # The common real-UID probes actually wait for both permission checks:
 //    # neither seed can be opened and neither retained approval can be edited.
 const probe = String.raw`
-import errno, json, os, pty, select, socket, stat, subprocess, sys, time
+import errno, json, os, pty, select, shutil, socket, stat, subprocess, sys, time
 
 ROOT = "/work"
 CUSTODY_UID, CUSTODY_GID = 12001, 12001
@@ -752,7 +773,7 @@ def phase_generate_artifact(public_key, request_id_hex, nonce, out_path, wasm_fi
         raise FixtureFailure("the independently approved preimage is not custody-owned mode 0600")
 
 
-def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, expires_in_seconds, command=None, expected_review_lines=(), expected_confirmation_prefix=None):
+def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, expires_in_seconds, command=None, expected_review_lines=(), expected_confirmation_prefix=None, return_confirmation_line=False):
     argv = command or cli_argv(
         "custody", "approve",
         "--config", config_path,
@@ -833,7 +854,7 @@ def phase_approve_via_pty(config_path, artifact_path, nonce, request_id_hex, exp
     record_stat = os.stat(record_path)
     if stat.S_IMODE(record_stat.st_mode) != 0o600 or record_stat.st_uid != CUSTODY_UID:
         raise FixtureFailure("the written approval record's metadata is not exactly owner=custody, mode 0600")
-    return len(captured)
+    return confirmation_line if return_confirmation_line else len(captured)
 
 
 def phase_approve_without_terminal(config_path, artifact_path):
@@ -4389,8 +4410,305 @@ def phase_genesis_split_identity_handoff(public_key, key_recovery):
     if len(json.dumps(summary, sort_keys=True).encode()) > 4096: raise FixtureFailure("split handoff summary exceeds4KiB")
     return summary
 
+def phase_fee_claim_zero():
+    global CHAIN_ID, PROTOCOL_VERSION, EPOCH, DOMAIN_HEX
+    source = "/mnt/fee"
+    with open(f"{source}/meta.txt", encoding="ascii") as metadata_file:
+        pairs = [line.rstrip("\n").split("=", 1) for line in metadata_file]
+    meta = dict(pairs)
+    expected = {"chain_id", "protocol_version", "epoch", "genesis_epoch", "domain",
+                "genesis_digest", "public_key", "request_id"}
+    if len(pairs) != len(meta) or set(meta) != expected:
+        raise FixtureFailure("ZeroShare source metadata is incomplete or duplicated")
+    CHAIN_ID, PROTOCOL_VERSION, EPOCH, DOMAIN_HEX = (
+        meta["chain_id"], meta["protocol_version"], meta["epoch"], meta["domain"]
+    )
+    if any(len(meta[name]) != 64 for name in ("domain", "genesis_digest", "public_key", "request_id")):
+        raise FixtureFailure("ZeroShare source metadata has an invalid digest or key length")
+
+    def private_copy(source_path, target_path, uid, gid):
+        if not stat.S_ISREG(os.lstat(source_path).st_mode):
+            raise FixtureFailure("ZeroShare source contains a non-regular file")
+        shutil.copyfile(source_path, target_path)
+        os.chmod(target_path, 0o600)
+        os.chown(target_path, uid, gid)
+
+    def private_tree(source_path, target_path, uid, gid):
+        os.mkdir(target_path, 0o700)
+        os.chown(target_path, uid, gid)
+        for entry in os.scandir(source_path):
+            destination = f"{target_path}/{entry.name}"
+            if entry.is_dir(follow_symlinks=False):
+                private_tree(entry.path, destination, uid, gid)
+            elif entry.is_file(follow_symlinks=False):
+                private_copy(entry.path, destination, uid, gid)
+            else:
+                raise FixtureFailure("ZeroShare archive contains a symlink or special file")
+
+    for label, uid, gid, parent in [
+        ("custody", CUSTODY_UID, CUSTODY_GID, f"{ROOT}/custody-artifacts"),
+        ("operator", OPERATOR_UID, OPERATOR_GID, f"{ROOT}/operator"),
+    ]:
+        base = f"{parent}/fee"
+        os.mkdir(base, 0o700)
+        os.chown(base, uid, gid)
+        for name in ("genesis.bin", "request.bin", "intent.bin"):
+            private_copy(f"{source}/{name}", f"{base}/{name}", uid, gid)
+        for role in ("plan", "cut", "history", "certificate"):
+            private_tree(f"{source}/{role}", f"{base}/{role}", uid, gid)
+    custody_base = f"{ROOT}/custody-artifacts/fee"
+    operator_base = f"{ROOT}/operator/fee"
+    key_path = f"{ROOT}/custody-keys/custody.seed"
+    # Root opens the private source path but never reads the disposable seed.
+    # The inherited descriptor is read and the key is written only after
+    # dropping to the custody UID; the operator cannot open either path.
+    seed_source = f"{source}/seed.hex"
+    seed_stat = os.lstat(seed_source)
+    if not stat.S_ISREG(seed_stat.st_mode) or stat.S_IMODE(seed_stat.st_mode) != 0o600:
+        raise FixtureFailure("disposable source seed is not a private regular file")
+    seed_descriptor = os.open(seed_source, os.O_RDONLY | os.O_NOFOLLOW)
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.setgroups([CUSTODY_GID])
+            os.setgid(CUSTODY_GID)
+            os.setuid(CUSTODY_UID)
+            seed_text = os.read(seed_descriptor, 65)
+            os.close(seed_descriptor)
+            if len(seed_text) != 64 or any(byte not in b"0123456789abcdef" for byte in seed_text):
+                os._exit(126)
+            descriptor = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                os.write(descriptor, seed_text + b"\n")
+            finally:
+                os.close(descriptor)
+            os._exit(0)
+        finally:
+            os._exit(127)
+    os.close(seed_descriptor)
+    _, status = os.waitpid(pid, 0)
+    if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+        raise FixtureFailure("custody UID could not create its disposable claimant key")
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.setgroups([OPERATOR_GID, CUSTODY_GID])
+            os.setgid(OPERATOR_GID)
+            os.setuid(OPERATOR_UID)
+            try:
+                os.open(seed_source, os.O_RDONLY | os.O_NOFOLLOW)
+            except PermissionError:
+                os._exit(0)
+            os._exit(2)
+        finally:
+            os._exit(127)
+    _, status = os.waitpid(pid, 0)
+    if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+        raise FixtureFailure("operator UID could read the disposable source seed")
+    public = meta["public_key"]
+    config = phase_write_config(public)
+
+    def trust(base):
+        return [
+            "--suite", "0:1:1:1:1:1:1:1",
+            "--successor-genesis-epoch", meta["genesis_epoch"],
+            "--successor-plan-history-dir", f"{base}/plan",
+            "--successor-cut-dir", f"{base}/cut",
+            "--successor-manifest-history-dir", f"{base}/history",
+            "--successor-certificate-dir", f"{base}/certificate",
+            "--successor-max-links", "1",
+        ]
+
+    approve = cli_argv(
+        "custody", "approve-fee-claim", "--config", config,
+        "--genesis-manifest-file", f"{custody_base}/genesis.bin",
+        "--genesis-digest", meta["genesis_digest"],
+        *trust(custody_base),
+        "--request", f"{custody_base}/request.bin",
+        "--intent", f"{custody_base}/intent.bin",
+        "--approvals-dir", f"{ROOT}/custody-approvals",
+        "--expires-in-seconds", "3600",
+    )
+    serve_args = cli_argv(
+        "custody", "serve-fee-claim", "--config", config,
+        "--genesis-manifest-file", f"{custody_base}/genesis.bin",
+        "--genesis-digest", meta["genesis_digest"],
+        *trust(custody_base),
+        "--key-file", key_path,
+        "--socket", f"{ROOT}/run/custody.sock",
+        "--approvals-dir", f"{ROOT}/custody-approvals",
+    )
+    common_sign = [
+        "economics", "fee-claim-sign",
+        "--ordered-genesis-manifest", f"{operator_base}/genesis.bin",
+        "--ordered-expected-genesis-digest", meta["genesis_digest"],
+        "--expected-chain-id", CHAIN_ID,
+        "--expected-protocol-version", PROTOCOL_VERSION,
+        "--expected-epoch", EPOCH,
+        "--domain", DOMAIN_HEX,
+        *trust(operator_base),
+        "--request", f"{operator_base}/request.bin",
+        "--intent", f"{operator_base}/intent.bin",
+        "--custody-socket", f"{ROOT}/run/custody.sock",
+        "--custody-uid", str(CUSTODY_UID),
+        "--custody-expected-public-key", public,
+        "--created-checkpoint", "1000",
+    ]
+
+    def sign(label, expect_success, expected_errors=()):
+        out_path = f"{operator_base}/{label}.candidate"
+        argv = cli_argv(*common_sign, "--out", out_path)
+        rc, _out, err = run_exec(argv, OPERATOR_UID, OPERATOR_GID,
+                                 [OPERATOR_GID, CUSTODY_GID], timeout=25)
+        if (rc == 0) != expect_success or os.path.exists(out_path) != expect_success:
+            raise FixtureFailure(f"ZeroShare {label} sign result differs: {err.decode('utf8', 'replace')}")
+        if expected_errors and not any(needle in err.lower() for needle in expected_errors):
+            raise FixtureFailure(f"ZeroShare {label} did not report the expected refusal cause: {err.decode('utf8', 'replace')}")
+        return out_path
+
+    rc, _out, err = run_exec(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], timeout=20)
+    if rc == 0 or b"terminal" not in err.lower():
+        raise FixtureFailure("ZeroShare approval succeeded without a real terminal")
+    if os.path.exists(f"{ROOT}/custody-approvals/{meta['request_id']}"):
+        raise FixtureFailure("non-terminal ZeroShare approval wrote a record")
+
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        try:
+            os.setgroups([CUSTODY_GID])
+            os.setgid(CUSTODY_GID)
+            os.setuid(CUSTODY_UID)
+            os.execv(approve[0], approve)
+        finally:
+            os._exit(127)
+    overlong_output = b""
+    sent_overlong = False
+    while True:
+        ready, _, _ = select.select([master_fd], [], [], min(10, remaining()))
+        if not ready:
+            raise FixtureFailure("overlong ZeroShare PTY refusal timed out")
+        try:
+            chunk = os.read(master_fd, 4096)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        overlong_output += chunk
+        if len(overlong_output) > 16_384:
+            raise FixtureFailure("overlong ZeroShare PTY output exceeded its bound")
+        if not sent_overlong and b"Type exactly to approve:" in overlong_output:
+            os.write(master_fd, b"A" * 2048 + b"\n")
+            sent_overlong = True
+    os.close(master_fd)
+    _, status = os.waitpid(pid, 0)
+    charge_output(len(overlong_output))
+    if (not sent_overlong or not os.WIFEXITED(status) or os.WEXITSTATUS(status) == 0 or
+            b"confirmation did not match" not in overlong_output or
+            os.path.exists(f"{ROOT}/custody-approvals/{meta['request_id']}")):
+        raise FixtureFailure("overlong ZeroShare PTY input was not refused before approval")
+
+    socket_path = f"{ROOT}/run/custody.sock"
+    def serve(max_connections, max_requests):
+        command = [*serve_args, "--max-connections", str(max_connections),
+                   "--max-requests", str(max_requests), "--total-deadline-secs", "25"]
+        return start_serve(socket_path, 25, max_connections, max_requests, command=command)
+
+    before = serve(1, 1)
+    sign("unapproved", False, (b"no_approval",))
+    check_summary("ZeroShare unapproved", wait_serve(before, 10), {
+        "connections_accepted": "1", "requests_handled": "1",
+        "requests_signed": "0", "requests_refused": "1",
+    })
+    confirmation = phase_approve_via_pty(config, f"{custody_base}/intent.bin", 0,
+                                         meta["request_id"], 3600, command=approve,
+                                         return_confirmation_line=True)
+    if not confirmation.startswith("APPROVE-FEE-CLAIM-ZERO ") or not 1024 < len(confirmation) < 2048:
+        raise FixtureFailure("ZeroShare typed confirmation did not exercise the full bounded line")
+    with open(f"{source}/confirmation-fields.txt", encoding="ascii") as field_source:
+        pairs = [line.rstrip("\n").split("=", 1) for line in field_source]
+    expected_fields = dict(pairs)
+    actual_pairs = [field.split("=", 1) for field in confirmation.split(" ")[1:]]
+    actual_fields = dict(actual_pairs)
+    actual_unique = len(actual_pairs) == len(actual_fields)
+    not_after = actual_fields.pop("not_after", None)
+    if len(pairs) != len(expected_fields) or not actual_unique or not_after is None:
+        raise FixtureFailure("ZeroShare confirmation fields are duplicated or missing")
+    if actual_fields != expected_fields or not not_after.isdecimal() or int(not_after) <= time.time():
+        raise FixtureFailure("ZeroShare confirmation differs from independently saved claim fields")
+    phase_operator_cannot_read_or_edit(meta["request_id"])
+    phase_operator_cannot_revoke(f"{ROOT}/custody-approvals", meta["request_id"])
+
+    active = serve(3, 2)
+    # The operator's own malformed saved preimage is rejected with a live
+    # listener. Exact serve counters below prove it never reached custody.
+    intent_path = f"{operator_base}/intent.bin"
+    with open(intent_path, "rb") as source_file:
+        intact_intent = source_file.read()
+    with open(intent_path, "wb") as target_file:
+        target_file.write(intact_intent[:-1] + bytes([intact_intent[-1] ^ 1]))
+    sign("tampered-intent", False, (b"fee claim", b"canonical"))
+    with open(intent_path, "wb") as target_file:
+        target_file.write(intact_intent)
+    wrong_pin = common_sign.copy()
+    wrong_pin[wrong_pin.index("--custody-expected-public-key") + 1] = "00" * 32
+    wrong_out = f"{operator_base}/wrong-pin.candidate"
+    rc, _out, err = run_exec(
+        cli_argv(*wrong_pin, "--out", wrong_out), OPERATOR_UID, OPERATOR_GID,
+        [OPERATOR_GID, CUSTODY_GID], timeout=20,
+    )
+    if rc == 0 or os.path.exists(wrong_out) or b"pinned custody key" not in err.lower():
+        raise FixtureFailure("wrong pinned custody key produced a ZeroShare candidate")
+    certificate_path = f"{operator_base}/certificate/certificate.bin"
+    with open(certificate_path, "rb") as source_file:
+        intact_certificate = source_file.read()
+    with open(certificate_path, "wb") as target_file:
+        target_file.write(intact_certificate[:-1] + bytes([intact_certificate[-1] ^ 1]))
+    sign("tampered-certificate", False, (b"certificate", b"archive", b"successor", b"digest"))
+    with open(certificate_path, "wb") as target_file:
+        target_file.write(intact_certificate)
+
+    phase_intruder_wrong_peer_uid(socket_path)
+    candidate = sign("approved", True)
+    if read_file_bytes_as_root(candidate, 2_000_000) != read_file_bytes_as_root(f"{source}/baseline.candidate", 2_000_000):
+        raise FixtureFailure("protected ZeroShare candidate differs from the historical seed signature")
+    phase_revoke_is_idempotent_and_preserves_approval(f"{ROOT}/custody-approvals", meta["request_id"])
+    sign("revoked-live", False, (b"no_approval",))
+    check_summary("ZeroShare live revocation", wait_serve(active, 10), {
+        "connections_accepted": "3", "requests_handled": "2",
+        "requests_signed": "1", "requests_refused": "1",
+    })
+    rc, _out, err = run_exec(approve, CUSTODY_UID, CUSTODY_GID, [CUSTODY_GID], timeout=20)
+    if rc == 0 or b"revok" not in err.lower():
+        raise FixtureFailure("revoked ZeroShare approval could be repeated")
+    restarted = serve(1, 1)
+    sign("revoked-restart", False, (b"no_approval",))
+    check_summary("ZeroShare restart revocation", wait_serve(restarted, 10), {
+        "connections_accepted": "1", "requests_handled": "1",
+        "requests_signed": "0", "requests_refused": "1",
+    })
+    if os.path.lexists(socket_path):
+        raise FixtureFailure("ZeroShare serve left its socket behind")
+    total_bytes = sum(
+        os.stat(os.path.join(directory, filename)).st_size
+        for directory, _subdirectories, filenames in os.walk(ROOT)
+        for filename in filenames
+    )
+    if total_bytes <= 0 or total_bytes > 64 * 1024 * 1024:
+        raise FixtureFailure("ZeroShare fixture files exceed the owned 64MiB allocation")
+    print(json.dumps({
+        "ok": True, "scope": "fee_claim_zero_docker_linux_uid_pty", "zero_share": True,
+        "candidate_bytes_equal": True, "revoked_after_restart": True,
+        "operator_private_access_refused": True, "generated_bytes_total": total_bytes,
+    }, sort_keys=True))
+
+
 def main():
     phase_setup()
+    if os.path.isdir("/mnt/fee"):
+        phase_fee_claim_zero()
+        return
     phase_missing_prerequisite_fails()
 
     public_key = phase_keygen()
@@ -4641,7 +4959,7 @@ except Exception as error:  # last resort: never a silent success on an unexpect
 
 function probeCommand() {
   const source = Buffer.from(probe, 'utf8');
-  if (source.length > 256 * 1024) throw new Error('fixture program exceeds its transport bound');
+  if (source.length > 272 * 1024) throw new Error('fixture program exceeds its transport bound');
   const packed = deflateSync(source).toString('base64');
   const digest = createHash('sha256').update(source).digest('hex');
   // Keep one argv below Linux's per-argument limit without changing the
@@ -5340,10 +5658,14 @@ try {
       allocations[0].Destination !== '/work' || allocations[0].RW !== true ||
       allocations[0].Source !== volumeMountpoint) throw new Error('owned allocation attachment differs');
   const readonlyMounts = mounts.filter((mount) => mount.Type === 'bind');
-  const expectedMountCount = 3 + closure.libs.size; // cli + harness + ld.so + each shared library
+  const expectedMountCount = 3 + closure.libs.size + (feeClaimSource ? 1 : 0); // cli + harness + ld.so + libraries + optional source
   if (!Array.isArray(mounts) || mounts.length !== expectedMountCount + 1 ||
       readonlyMounts.length !== expectedMountCount || !readonlyMounts.every((mount) => mount.RW === false)) {
     throw new Error('bind mounts are not exactly the owned read-only custody/library closure');
+  }
+  if (feeClaimSource && !readonlyMounts.some((mount) =>
+      mount.Source === feeClaimSource && mount.Destination === '/mnt/fee' && mount.RW === false)) {
+    throw new Error('genuine ZeroShare source is not the exact read-only bind');
   }
   if (config.Memory !== 512 * 1024 * 1024 || config.MemorySwap !== 512 * 1024 * 1024 ||
       config.PidsLimit !== 64 || config.NanoCpus !== 1_000_000_000 ||
@@ -5376,10 +5698,22 @@ try {
   if (completed.code !== 0 || result.ok !== true) {
     throw new Error(`fixture reported failure: ${result?.error ?? completed.stderr.trim() ?? 'unknown'}`);
   }
-  if (profile === 'publication-genesis') validatePublicationGenesisResult(result);
-  else if (profile === 'genesis-split-handoff') validateGenesisSplitHandoffResult(result);
-  else if (profile === 'application-transfer-recovery') validateApplicationTransferRecoveryResult(result);
-  else validateApplicationSplitMergeRecoveryResult(result);
+  if (feeClaimSource) {
+    if (result.scope !== 'fee_claim_zero_docker_linux_uid_pty' ||
+        result.zero_share !== true || result.candidate_bytes_equal !== true ||
+        result.revoked_after_restart !== true || result.operator_private_access_refused !== true) {
+      throw new Error('the protected ZeroShare fixture evidence is incomplete');
+    }
+    if (!Number.isSafeInteger(result.generated_bytes_total) || result.generated_bytes_total <= 0 ||
+        result.generated_bytes_total > 64 * 1024 * 1024) {
+      throw new Error('the protected ZeroShare fixture allocation evidence is incomplete');
+    }
+  } else {
+    if (profile === 'publication-genesis') validatePublicationGenesisResult(result);
+    else if (profile === 'genesis-split-handoff') validateGenesisSplitHandoffResult(result);
+    else if (profile === 'application-transfer-recovery') validateApplicationTransferRecoveryResult(result);
+    else validateApplicationSplitMergeRecoveryResult(result);
+  }
 } catch (error) {
   primaryError = error;
 } finally {

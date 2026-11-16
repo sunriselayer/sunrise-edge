@@ -15,7 +15,7 @@ use crate::{
     args::{FlagSpec, ParsedArgs, scalar},
     error::CliError,
     hex::decode_hex_32,
-    parse::parse_u64,
+    parse::{parse_u32, parse_u64},
 };
 
 fn failure(error: impl Error + Send + Sync + 'static) -> CliError {
@@ -126,9 +126,67 @@ fn flag_specs(sign: bool) -> Vec<FlagSpec> {
             scalar("--claimant-seed-file"),
             scalar("--created-checkpoint"),
             scalar("--out"),
+            scalar(crate::signer::CUSTODY_SOCKET),
+            scalar(crate::signer::CUSTODY_UID),
+            scalar(crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY),
         ]);
     }
     flags
+}
+
+/// The exclusive, all-or-none fee-claim-sign signer choice: the
+/// development-only local seed, or the full protected custody trio. Checked
+/// from arguments only, before any file I/O (config, successor artifacts,
+/// request/intent, seed, or socket).
+enum FeeClaimSignerChoice {
+    Seed(String),
+    Custody {
+        socket: String,
+        custody_uid: u32,
+        expected_public_key: [u8; 32],
+    },
+}
+
+fn select_fee_claim_signer(parsed: &ParsedArgs) -> Result<FeeClaimSignerChoice, CliError> {
+    let seed: bool = parsed.get("--claimant-seed-file").is_some();
+    let custody_socket: bool = parsed.get(crate::signer::CUSTODY_SOCKET).is_some();
+    let custody_uid: bool = parsed.get(crate::signer::CUSTODY_UID).is_some();
+    let custody_key: bool = parsed
+        .get(crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY)
+        .is_some();
+    let custody_any: bool = custody_socket || custody_uid || custody_key;
+    if seed && custody_any {
+        return Err(CliError::ConflictingSignerSelection);
+    }
+    if !seed && !custody_any {
+        return Err(CliError::MissingSignerSelection);
+    }
+    if seed {
+        return Ok(FeeClaimSignerChoice::Seed(
+            parsed.require("--claimant-seed-file")?.to_string(),
+        ));
+    }
+    if !(custody_socket && custody_uid && custody_key) {
+        let missing: &'static str = if !custody_socket {
+            crate::signer::CUSTODY_SOCKET
+        } else if !custody_uid {
+            crate::signer::CUSTODY_UID
+        } else {
+            crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY
+        };
+        return Err(CliError::PartialCustodySignerConfiguration { missing });
+    }
+    Ok(FeeClaimSignerChoice::Custody {
+        socket: parsed.require(crate::signer::CUSTODY_SOCKET)?.to_string(),
+        custody_uid: parse_u32(
+            crate::signer::CUSTODY_UID,
+            parsed.require(crate::signer::CUSTODY_UID)?,
+        )?,
+        expected_public_key: decode_hex_32(
+            crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY,
+            parsed.require(crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY)?,
+        )?,
+    })
 }
 
 fn load_workflow(
@@ -169,7 +227,7 @@ fn load_workflow(
     .ok_or_else(|| invalid("fee-claim review/sign requires the --successor-* artifact flags"))
 }
 
-fn decode_saved(
+pub(crate) fn decode_saved(
     request: &[u8],
     intent: &[u8],
 ) -> Result<(FeeClaimPrepareRequest, FeeClaimIntent), CliError> {
@@ -187,6 +245,15 @@ fn decode_saved(
     Ok((request_frame, intent_frame))
 }
 
+fn read_saved(
+    request_path: &str,
+    intent_path: &str,
+) -> Result<(FeeClaimPrepareRequest, FeeClaimIntent), CliError> {
+    let request_bytes: Vec<u8> = read_bounded(request_path, MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES)?;
+    let intent_bytes: Vec<u8> = read_bounded(intent_path, MAX_FEE_CLAIM_INTENT_BYTES)?;
+    decode_saved(&request_bytes, &intent_bytes)
+}
+
 pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I, sign: bool) -> Result<(), CliError> {
     let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &flag_specs(sign))?;
     if !super::successor_pins::successor_requested(&parsed) {
@@ -196,8 +263,14 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I, sign: bool) -> Resu
     }
     let request_path: &str = parsed.require("--request")?;
     let intent_path: &str = parsed.require("--intent")?;
+    // Signer selection is checked from arguments only, before any file I/O
+    // (successor artifacts, request/intent, seed, or socket).
+    let signer_choice: Option<FeeClaimSignerChoice> = if sign {
+        Some(select_fee_claim_signer(&parsed)?)
+    } else {
+        None
+    };
     let checkpoint: Option<u64> = if sign {
-        parsed.require("--claimant-seed-file")?;
         parsed.require("--out")?;
         Some(parse_u64(
             "--created-checkpoint",
@@ -206,11 +279,26 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I, sign: bool) -> Resu
     } else {
         None
     };
-    let workflow: SuccessorWorkflowAuthority = load_workflow(&parsed, schedules)?;
-    let request_bytes: Vec<u8> = read_bounded(request_path, MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES)?;
-    let intent_bytes: Vec<u8> = read_bounded(intent_path, MAX_FEE_CLAIM_INTENT_BYTES)?;
-    let (request, intent): (FeeClaimPrepareRequest, FeeClaimIntent) =
-        decode_saved(&request_bytes, &intent_bytes)?;
+    let (workflow, request, intent): (
+        SuccessorWorkflowAuthority,
+        FeeClaimPrepareRequest,
+        FeeClaimIntent,
+    ) = if let Some(FeeClaimSignerChoice::Custody {
+        expected_public_key,
+        ..
+    }) = &signer_choice
+    {
+        // The protected branch rejects an invalid profile before loading any
+        // successor workflow artifact. The ordinary review and seed branches
+        // retain their previous workflow-first validation order.
+        let (request, intent) = read_saved(request_path, intent_path)?;
+        crate::custody::require_zero_share_profile(&request, &intent, *expected_public_key)?;
+        (load_workflow(&parsed, schedules)?, request, intent)
+    } else {
+        let workflow = load_workflow(&parsed, schedules)?;
+        let (request, intent) = read_saved(request_path, intent_path)?;
+        (workflow, request, intent)
+    };
     let prepared: PreparedFeeClaim<'_> =
         PreparedFeeClaim::prepare(&workflow, &request, intent).map_err(failure)?;
     // Refuse unreadable/malformed/unbounded review before any seed is loaded.
@@ -220,12 +308,44 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I, sign: bool) -> Resu
         return Ok(());
     };
     let out: &str = parsed.require("--out")?;
-    let seed: [u8; 32] =
-        crate::seed::load_dev_seed(Path::new(parsed.require("--claimant-seed-file")?))
-            .map_err(failure)?;
-    let signer: sunrise_edge_client::LocalSigner =
-        sunrise_edge_client::LocalSigner::from_seed(seed);
-    let signed: Vec<u8> = prepared.sign_and_finalize_with(&signer).map_err(failure)?;
+    let (signed, retained_seed_path): (Vec<u8>, Option<&str>) =
+        match signer_choice.expect("sign=true always selects a signer") {
+            FeeClaimSignerChoice::Seed(seed_file) => {
+                let seed: [u8; 32] =
+                    crate::seed::load_dev_seed(Path::new(&seed_file)).map_err(failure)?;
+                let signer: sunrise_edge_client::LocalSigner =
+                    sunrise_edge_client::LocalSigner::from_seed(seed);
+                (
+                    prepared.sign_and_finalize_with(&signer).map_err(failure)?,
+                    Some(parsed.require("--claimant-seed-file")?),
+                )
+            }
+            FeeClaimSignerChoice::Custody {
+                socket,
+                custody_uid,
+                expected_public_key,
+            } => {
+                if prepared.claimant().as_bytes() != &expected_public_key {
+                    return Err(invalid(
+                        "fee claim claimant differs from the pinned custody key",
+                    ));
+                }
+                let target = crate::custody::CustodyTarget {
+                    socket: socket.into(),
+                    custody_uid,
+                    expected_public_key,
+                };
+                let signature: [u8; 64] = crate::custody::request_fee_claim_zero_signature(
+                    &target,
+                    prepared.request(),
+                    prepared.intent(),
+                )?;
+                (
+                    prepared.finalize(signature.to_vec()).map_err(failure)?,
+                    None,
+                )
+            }
+        };
     let encoded: Vec<u8> =
         sunrise_edge_client::fee_claim_candidate(&workflow, request.request_id, signed, checkpoint)
             .map_err(failure)?;
@@ -236,21 +356,26 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I, sign: bool) -> Resu
         &candidate,
     )
     .map_err(failure)?;
-    let mut reservations: Vec<ReservedArtifact> = reserve_artifacts(
-        &[(out, "ordered-economics-candidate")],
-        &[
-            request_path,
-            intent_path,
-            parsed.require("--ordered-genesis-manifest")?,
-            parsed.require("--claimant-seed-file")?,
-        ],
-    )?;
+    let mut retained: Vec<&str> = vec![
+        request_path,
+        intent_path,
+        parsed.require("--ordered-genesis-manifest")?,
+    ];
+    if let Some(seed_path) = retained_seed_path {
+        retained.push(seed_path);
+    }
+    let mut reservations: Vec<ReservedArtifact> =
+        reserve_artifacts(&[(out, "ordered-economics-candidate")], &retained)?;
     let mut artifact: ReservedArtifact = reservations
         .pop()
         .ok_or_else(|| invalid("missing fee-claim output reservation"))?;
     artifact.persist(&encoded)?;
+    // `created_checkpoint` is an outer candidate field the claimant's
+    // signature does not cover and custody never approves; an operator can
+    // rewrap a signed claim with a different checkpoint, so this output
+    // never claims the candidate's checkpoint is fixed by the signature.
     println!(
-        "fee_claim_candidate_bytes={} out={out} epoch={}",
+        "fee_claim_candidate_bytes={} out={out} epoch={} created_checkpoint_not_covered_by_claimant_signature=true",
         encoded.len(),
         workflow.expected_context().epoch().get()
     );
@@ -388,5 +513,161 @@ mod tests {
     fn malformed_saved_frames_refuse_before_any_signer() {
         assert!(decode_saved(&[], &[]).is_err());
         assert!(decode_saved(&[0; 32], &[0; 32]).is_err());
+    }
+
+    #[test]
+    fn protected_claimant_mismatch_refuses_before_successor_artifact_io() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "fee-claim-profile-before-workflow-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let request_path = root.join("request.bin");
+        let intent_path = root.join("intent.bin");
+        let missing = root.join("missing-workflow-artifact");
+        let output = root.join("signed.bin");
+        let (request, intent) = sample_saved();
+        std::fs::write(&request_path, request).unwrap();
+        std::fs::write(&intent_path, intent).unwrap();
+
+        let mut args = Vec::new();
+        for (flag, value) in [
+            ("--request", request_path.to_string_lossy().into_owned()),
+            ("--intent", intent_path.to_string_lossy().into_owned()),
+            ("--expected-chain-id", "fee-review-structural-test".into()),
+            ("--expected-protocol-version", "3".into()),
+            ("--expected-epoch", "1".into()),
+            ("--domain", "02".repeat(32)),
+            (
+                "--ordered-genesis-manifest",
+                missing.to_string_lossy().into_owned(),
+            ),
+            ("--ordered-expected-genesis-digest", "07".repeat(32)),
+            ("--suite", "0:1:1:1:1:1:1:1".into()),
+            ("--successor-genesis-epoch", "0".into()),
+            ("--successor-max-links", "1".into()),
+            (
+                "--successor-plan-history-dir",
+                missing.to_string_lossy().into_owned(),
+            ),
+            (
+                "--successor-cut-dir",
+                missing.to_string_lossy().into_owned(),
+            ),
+            (
+                "--successor-manifest-history-dir",
+                missing.to_string_lossy().into_owned(),
+            ),
+            (
+                "--successor-certificate-dir",
+                missing.to_string_lossy().into_owned(),
+            ),
+            (
+                crate::signer::CUSTODY_SOCKET,
+                missing.to_string_lossy().into_owned(),
+            ),
+            (crate::signer::CUSTODY_UID, "1000".into()),
+            (crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY, "ff".repeat(32)),
+            ("--created-checkpoint", "1".into()),
+            ("--out", output.to_string_lossy().into_owned()),
+        ] {
+            args.extend([OsString::from(flag), OsString::from(value)]);
+        }
+        let result = run(args, true);
+        let output_absent = !output.exists();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(matches!(
+            result,
+            Err(CliError::Custody(error))
+                if matches!(*error, crate::custody::CustodyError::ZeroShareClaimantMismatch)
+        ));
+        assert!(output_absent);
+    }
+
+    fn signer_selection_flags(values: &[(&str, &str)]) -> ParsedArgs {
+        let specs: Vec<FlagSpec> = flag_specs(true);
+        let mut tokens: Vec<OsString> = Vec::new();
+        for (flag, value) in values {
+            tokens.push(OsString::from(*flag));
+            tokens.push(OsString::from(*value));
+        }
+        parse_flags(tokens, &specs).unwrap()
+    }
+
+    #[test]
+    fn signer_selection_requires_exactly_one_group_before_any_io() {
+        assert!(matches!(
+            select_fee_claim_signer(&signer_selection_flags(&[])),
+            Err(CliError::MissingSignerSelection)
+        ));
+        assert!(matches!(
+            select_fee_claim_signer(&signer_selection_flags(&[(
+                "--claimant-seed-file",
+                "/nonexistent/seed"
+            )])),
+            Ok(FeeClaimSignerChoice::Seed(path)) if path == "/nonexistent/seed"
+        ));
+    }
+
+    #[test]
+    fn signer_selection_refuses_a_partial_custody_trio() {
+        let key_hex: String = "11".repeat(32);
+        for flags in [
+            vec![(crate::signer::CUSTODY_SOCKET, "/nonexistent/sock")],
+            vec![
+                (crate::signer::CUSTODY_SOCKET, "/nonexistent/sock"),
+                (crate::signer::CUSTODY_UID, "1001"),
+            ],
+        ] {
+            assert!(matches!(
+                select_fee_claim_signer(&signer_selection_flags(&flags)),
+                Err(CliError::PartialCustodySignerConfiguration { .. })
+            ));
+        }
+        let complete: ParsedArgs = signer_selection_flags(&[
+            (crate::signer::CUSTODY_SOCKET, "/nonexistent/sock"),
+            (crate::signer::CUSTODY_UID, "1001"),
+            (crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY, &key_hex),
+        ]);
+        assert!(matches!(
+            select_fee_claim_signer(&complete),
+            Ok(FeeClaimSignerChoice::Custody {
+                custody_uid: 1001,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn signer_selection_refuses_seed_combined_with_any_custody_flag() {
+        let conflicting: ParsedArgs = signer_selection_flags(&[
+            ("--claimant-seed-file", "/nonexistent/seed"),
+            (crate::signer::CUSTODY_SOCKET, "/nonexistent/sock"),
+        ]);
+        assert!(matches!(
+            select_fee_claim_signer(&conflicting),
+            Err(CliError::ConflictingSignerSelection)
+        ));
+    }
+
+    /// `flag_specs(false)` (review mode) never registers the 3 custody
+    /// flags, so passing one is an unknown-flag parse failure -- the same
+    /// mechanism that already refuses `--claimant-seed-file` in review
+    /// mode -- never a silent fallback to a signer.
+    #[test]
+    fn review_mode_never_registers_custody_signer_flags() {
+        let specs: Vec<FlagSpec> = flag_specs(false);
+        assert!(
+            parse_flags(
+                vec![
+                    OsString::from(crate::signer::CUSTODY_SOCKET),
+                    OsString::from("/nonexistent/sock"),
+                ],
+                &specs,
+            )
+            .is_err()
+        );
     }
 }

@@ -29,7 +29,7 @@
   - [x] **N1 readiness: 現行sourceの別UID実行結果**: commit `6801bca3`で既存readiness ownerの別UID worker/frontend profileが1 passed/0 failed。raw結果・実行元tree・資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md)に固定。後続の文書commitやM2親の資格へ転用しない。
   - [x] **N2 successor: 現行sourceの別UID実行結果**: commit `abccadfd`の既存recurring ownerが、元の7 epochs/e8・2件の1832-byte候補/committed ACKを保持して1 passed/0 failed。別UID、raw結果、11 artifact不変と資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md#n2-successor-passed-2026-11-13)に固定。後続sourceやM2/M7親の資格へ転用しない。
   - [x] **original bond: 実SQLite hostと保護署名の結合検証**: `b2087f0d`から修正した`3b05f2d2`の既存ownerで、同一genesis/Coinの実host観測から別承認・署名へ接続し、停止後の古いfenceを拒否。standaloneとnode-core handoffは各1 passed/0 failed。後者のpost-genesis Coin currentnessは既存固定応答のまま。失敗・成功rawと範囲は[限定検証記録](docs/development/validation/2026-11-12-m2-bond-realhost/README.md)。最終PR headの全体gateや実鍵資格へ転用しない。
-  - [ ] **ZeroShare専用custody WIP**: 別branchの未検証コードは未統合。fixture作成は提供側の安全判定で停止しており、再試行・迂回しない。実装済み・検証済みとは数えない。
+  - [ ] **ZeroShare専用custody component**: 別branchの`a8bf8fb9`では実Seal sourceを使う別UID/PTY/拒否・restartの限定Docker fixtureが1 passed/0 failed。現行main基点への統合作業とkind-7分離を含む最終sourceの完全gate/CI、独立review、実鍵資格は未達。旧branchの限定結果を現行sourceの資格へ転用しない。
   - 現行のN1〜N5区分は[下の表](#m2初期リリース対象の照合-2026-11-03)にまとめる。
 
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**

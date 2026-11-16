@@ -167,6 +167,30 @@ pub(crate) fn request_create_signature(
     runtime.block_on(request_signature_async(target, &frame))
 }
 
+/// Sends the exact untrusted `FeeClaimPrepareRequest` and host-prepared
+/// `FeeClaimIntent` only (kind 7), by analogy with
+/// [`request_transfer_signature`]. The caller independently rebuilds its
+/// own `PreparedFeeClaim` and calls `finalize` on the returned signature;
+/// this function grants no authority on its own.
+pub(crate) fn request_fee_claim_zero_signature(
+    target: &CustodyTarget,
+    request: &sunrise_edge_client::FeeClaimPrepareRequest,
+    intent: &sunrise_edge_client::FeeClaimIntent,
+) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyError> {
+    let frame: Vec<u8> =
+        super::fee_claim_zero_wire::encode(&super::fee_claim_zero_wire::FeeClaimZeroRequest {
+            request: request.clone(),
+            intent: intent.clone(),
+        })
+        .map_err(CustodyError::Wire)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(CustodyError::Runtime)?;
+    runtime.block_on(request_signature_async(target, &frame))
+}
+
 pub(super) async fn request_signature_async(
     target: &CustodyTarget,
     frame: &[u8],

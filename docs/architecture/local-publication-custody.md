@@ -10,7 +10,11 @@ the operator-facing contract and the Docker fixture recipe; it does not
 repeat the full design rationale.
 The separate [Standard Asset transfer profile](standard-asset-transfer-custody.md)
 uses a distinct invocation and message family. Publication `serve` remains
-publication-only.
+publication-only. The separate
+[protected ZeroShare fee-claim custody](fee-claim-custody.md)
+([DR-0257](decisions/0257-protected-zero-share-fee-claim-custody.md)) uses its
+own kind-7 message and `approve-fee-claim`/`serve-fee-claim` commands; its
+signing consumer is the existing `economics fee-claim-sign`, not `publish`.
 
 > [!WARNING]
 > This is a development-only fixture, not a production key-management
