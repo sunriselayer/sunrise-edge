@@ -245,6 +245,15 @@ pub(crate) fn decode_saved(
     Ok((request_frame, intent_frame))
 }
 
+fn read_saved(
+    request_path: &str,
+    intent_path: &str,
+) -> Result<(FeeClaimPrepareRequest, FeeClaimIntent), CliError> {
+    let request_bytes: Vec<u8> = read_bounded(request_path, MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES)?;
+    let intent_bytes: Vec<u8> = read_bounded(intent_path, MAX_FEE_CLAIM_INTENT_BYTES)?;
+    decode_saved(&request_bytes, &intent_bytes)
+}
+
 pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I, sign: bool) -> Result<(), CliError> {
     let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &flag_specs(sign))?;
     if !super::successor_pins::successor_requested(&parsed) {
@@ -270,21 +279,26 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I, sign: bool) -> Resu
     } else {
         None
     };
-    let workflow: SuccessorWorkflowAuthority = load_workflow(&parsed, schedules)?;
-    let request_bytes: Vec<u8> = read_bounded(request_path, MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES)?;
-    let intent_bytes: Vec<u8> = read_bounded(intent_path, MAX_FEE_CLAIM_INTENT_BYTES)?;
-    let (request, intent): (FeeClaimPrepareRequest, FeeClaimIntent) =
-        decode_saved(&request_bytes, &intent_bytes)?;
-    // The protected ZeroShare custody branch refuses Split/FinalTransfer, a
-    // nonzero share, a signed leg, or a claimant other than the pinned
-    // custody key before `PreparedFeeClaim::prepare` touches the workflow.
-    if let Some(FeeClaimSignerChoice::Custody {
+    let (workflow, request, intent): (
+        SuccessorWorkflowAuthority,
+        FeeClaimPrepareRequest,
+        FeeClaimIntent,
+    ) = if let Some(FeeClaimSignerChoice::Custody {
         expected_public_key,
         ..
     }) = &signer_choice
     {
+        // The protected branch rejects an invalid profile before loading any
+        // successor workflow artifact. The ordinary review and seed branches
+        // retain their previous workflow-first validation order.
+        let (request, intent) = read_saved(request_path, intent_path)?;
         crate::custody::require_zero_share_profile(&request, &intent, *expected_public_key)?;
-    }
+        (load_workflow(&parsed, schedules)?, request, intent)
+    } else {
+        let workflow = load_workflow(&parsed, schedules)?;
+        let (request, intent) = read_saved(request_path, intent_path)?;
+        (workflow, request, intent)
+    };
     let prepared: PreparedFeeClaim<'_> =
         PreparedFeeClaim::prepare(&workflow, &request, intent).map_err(failure)?;
     // Refuse unreadable/malformed/unbounded review before any seed is loaded.
@@ -499,6 +513,77 @@ mod tests {
     fn malformed_saved_frames_refuse_before_any_signer() {
         assert!(decode_saved(&[], &[]).is_err());
         assert!(decode_saved(&[0; 32], &[0; 32]).is_err());
+    }
+
+    #[test]
+    fn protected_claimant_mismatch_refuses_before_successor_artifact_io() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "fee-claim-profile-before-workflow-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let request_path = root.join("request.bin");
+        let intent_path = root.join("intent.bin");
+        let missing = root.join("missing-workflow-artifact");
+        let output = root.join("signed.bin");
+        let (request, intent) = sample_saved();
+        std::fs::write(&request_path, request).unwrap();
+        std::fs::write(&intent_path, intent).unwrap();
+
+        let mut args = Vec::new();
+        for (flag, value) in [
+            ("--request", request_path.to_string_lossy().into_owned()),
+            ("--intent", intent_path.to_string_lossy().into_owned()),
+            ("--expected-chain-id", "fee-review-structural-test".into()),
+            ("--expected-protocol-version", "3".into()),
+            ("--expected-epoch", "1".into()),
+            ("--domain", "02".repeat(32)),
+            (
+                "--ordered-genesis-manifest",
+                missing.to_string_lossy().into_owned(),
+            ),
+            ("--ordered-expected-genesis-digest", "07".repeat(32)),
+            ("--suite", "0:1:1:1:1:1:1:1".into()),
+            ("--successor-genesis-epoch", "0".into()),
+            ("--successor-max-links", "1".into()),
+            (
+                "--successor-plan-history-dir",
+                missing.to_string_lossy().into_owned(),
+            ),
+            (
+                "--successor-cut-dir",
+                missing.to_string_lossy().into_owned(),
+            ),
+            (
+                "--successor-manifest-history-dir",
+                missing.to_string_lossy().into_owned(),
+            ),
+            (
+                "--successor-certificate-dir",
+                missing.to_string_lossy().into_owned(),
+            ),
+            (
+                crate::signer::CUSTODY_SOCKET,
+                missing.to_string_lossy().into_owned(),
+            ),
+            (crate::signer::CUSTODY_UID, "1000".into()),
+            (crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY, "ff".repeat(32)),
+            ("--created-checkpoint", "1".into()),
+            ("--out", output.to_string_lossy().into_owned()),
+        ] {
+            args.extend([OsString::from(flag), OsString::from(value)]);
+        }
+        let result = run(args, true);
+        let output_absent = !output.exists();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(matches!(
+            result,
+            Err(CliError::Custody(error))
+                if matches!(*error, crate::custody::CustodyError::ZeroShareClaimantMismatch)
+        ));
+        assert!(output_absent);
     }
 
     fn signer_selection_flags(values: &[(&str, &str)]) -> ParsedArgs {

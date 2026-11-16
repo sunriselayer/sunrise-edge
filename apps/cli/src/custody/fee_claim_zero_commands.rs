@@ -29,7 +29,7 @@ use super::{
     approvals::{self, ApprovalRecord},
     config::CustodyConfig,
     error::CustodyError,
-    fee_claim_zero::{FeeClaimZeroTrust, PreparedFeeClaimZero},
+    fee_claim_zero::{FeeClaimZeroTrust, PreparedFeeClaimZero, require_zero_share_profile},
     fsperm::read_private_file,
 };
 
@@ -159,6 +159,7 @@ pub(super) fn approve_fee_claim<I: IntoIterator<Item = OsString>>(args: I) -> Re
     let config: CustodyConfig = CustodyConfig::load(Path::new(parsed.require(CONFIG)?))?;
     let request: FeeClaimPrepareRequest = read_request(&parsed)?;
     let intent: FeeClaimIntent = read_intent(&parsed)?;
+    require_zero_share_profile(&request, &intent, *config.publisher().as_bytes())?;
     let approvals: &Path = Path::new(parsed.require(APPROVALS)?);
     let request_id = sunrise_edge_client::RequestId::new(intent.request_id)
         .map_err(|_| CliError::from(CustodyError::ZeroRequestId))?;
