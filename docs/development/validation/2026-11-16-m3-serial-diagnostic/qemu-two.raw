@@ -1,0 +1,31 @@
+[    0.194307] virt/tdx: TDX not supported by the host platform
+SERIAL-TWO source=<s-0123456789abcdef> source_len=18 authority=<a-0123456789abcdef> authority_len=18
+SERIAL-TWO-PASS
+[    0.756007] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000
+[    0.756335] CPU: 0 UID: 0 PID: 1 Comm: init Not tainted 7.2.9-200.fc44.x86_64 #1 PREEMPT(lazy) 
+[    0.756710] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS Arch Linux 1.17.0-2-2 04/01/2014
+[    0.757110] Call Trace:
+[    0.757223]  <TASK>
+[    0.757320]  dump_stack_lvl+0x5d/0x80
+[    0.757485]  vpanic+0x246/0x450
+[    0.757632]  panic+0x6b/0x70
+[    0.757764]  do_exit.cold+0x15/0x15
+[    0.757925]  do_group_exit+0x2d/0xc0
+[    0.758083]  __x64_sys_exit_group+0x18/0x20
+[    0.758264]  x64_sys_call+0x102c/0x1530
+[    0.758432]  do_syscall_64+0xe2/0x570
+[    0.758599]  ? irqentry_exit+0x45/0x760
+[    0.758766]  ? do_syscall_64+0x99/0x570
+[    0.758945]  ? exc_page_fault+0x90/0x1e0
+[    0.759116]  entry_SYSCALL_64_after_hwframe+0x76/0x7e
+[    0.759333] RIP: 0033:0x7fb0939e21b8
+[    0.759491] Code: 00 f7 d8 bb ff ff ff ff 64 89 02 eb c8 e8 50 31 04 00 f3 0f 1e fa 48 8b 35 2d ec 12 00 eb 04 0f 1f 00 f4 b8 e7 00 00 00 0f 05 <48> 3d 00 f0 ff ff 76 f0 f7 d8 64 89 06 eb e9 66 0f 1f 84 00 00 00
+[    0.760278] RSP: 002b:00007fffddbbb3b8 EFLAGS: 00000246 ORIG_RAX: 00000000000000e7
+[    0.760603] RAX: ffffffffffffffda RBX: 00007fb093b12f88 RCX: 00007fb0939e21b8
+[    0.760917] RDX: 00007fb09391fa48 RSI: ffffffffffffffb0 RDI: 0000000000000000
+[    0.761223] RBP: 00007fffddbbb410 R08: 0000000000000000 R09: 0000000000000000
+[    0.761530] R10: 00007fffddbbb250 R11: 0000000000000246 R12: 0000000000000001
+[    0.761829] R13: 0000000000000000 R14: 00007fb093b11680 R15: 00007fb093b12fa0
+[    0.762141]  </TASK>
+[    0.762291] Kernel Offset: 0xb600000 from 0xffffffff81000000 (relocation range: 0xffffffff80000000-0xffffffffbfffffff)
+[    0.762752] Rebooting in 1 seconds..

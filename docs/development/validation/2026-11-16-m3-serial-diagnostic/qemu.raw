@@ -1,0 +1,47 @@
+[    0.180385] virt/tdx: TDX not supported by the host platform
+SERIAL-DIAG value=<se-s-0123456789abcde> len=20 expected=<se-s-0123456789abcdef> expected_len=21
+[    0.678599] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000
+[    0.678920] CPU: 0 UID: 0 PID: 1 Comm: init Not tainted 7.2.9-200.fc44.x86_64 #1 PREEMPT(lazy) 
+[    0.679285] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS Arch Linux 1.17.0-2-2 04/01/2014
+[    0.679669] Call Trace:
+[    0.679780]  <TASK>
+[    0.679876]  dump_stack_lvl+0x5d/0x80
+[    0.680036]  vpanic+0x246/0x450
+[    0.680176]  panic+0x6b/0x70
+[    0.680312]  do_exit.cold+0x15/0x15
+[    0.680465]  ? avc_has_perm_noaudit+0x7e/0x150
+[    0.680660]  do_group_exit+0x2d/0xc0
+[    0.680818]  __x64_sys_exit_group+0x18/0x20
+[    0.680996]  x64_sys_call+0x102c/0x1530
+[    0.681163]  do_syscall_64+0xe2/0x570
+[    0.681330]  ? __mod_memcg_lruvec_state+0xed/0x230
+[    0.681535]  ? asm_common_interrupt+0x26/0x40
+[    0.681721]  ? lruvec_stat_mod_folio+0x7d/0xc0
+[    0.681911]  ? folio_add_file_rmap_ptes+0x57/0x270
+[    0.682115]  ? xas_find+0x83/0x1a0
+[    0.682266]  ? __pte_offset_map+0x1b/0x100
+[    0.682445]  ? next_uptodate_folio+0x93/0x320
+[    0.682632]  ? filemap_map_pages+0x2e6/0x480
+[    0.682816]  ? do_read_fault+0x107/0x250
+[    0.682985]  ? pte_offset_map_rw_nolock+0x1f/0x90
+[    0.683185]  ? do_fault+0x1fc/0x380
+[    0.683341]  ? __handle_mm_fault+0x47c/0x6c0
+[    0.683524]  ? vfs_write+0x281/0x560
+[    0.683681]  ? count_memcg_events+0xd9/0x210
+[    0.683864]  ? handle_mm_fault+0x24b/0x340
+[    0.684039]  ? do_user_addr_fault+0x2cd/0x840
+[    0.684225]  ? irqentry_exit+0x45/0x760
+[    0.684396]  ? do_syscall_64+0x99/0x570
+[    0.684561]  ? exc_page_fault+0x90/0x1e0
+[    0.684729]  entry_SYSCALL_64_after_hwframe+0x76/0x7e
+[    0.684942] RIP: 0033:0x7f2b4b0841b8
+[    0.685097] Code: 00 f7 d8 bb ff ff ff ff 64 89 02 eb c8 e8 50 31 04 00 f3 0f 1e fa 48 8b 35 2d ec 12 00 eb 04 0f 1f 00 f4 b8 e7 00 00 00 0f 05 <48> 3d 00 f0 ff ff 76 f0 f7 d8 64 89 06 eb e9 66 0f 1f 84 00 00 00
+[    0.685865] RSP: 002b:00007fff9b9d5208 EFLAGS: 00000246 ORIG_RAX: 00000000000000e7
+[    0.686179] RAX: ffffffffffffffda RBX: 00007f2b4b1b4f88 RCX: 00007f2b4b0841b8
+[    0.686481] RDX: 00007f2b4afc1a48 RSI: ffffffffffffffb0 RDI: 0000000000000000
+[    0.686776] RBP: 00007fff9b9d5260 R08: 0000000000000000 R09: 0000000000000000
+[    0.687072] R10: 00007fff9b9d50a0 R11: 0000000000000246 R12: 0000000000000001
+[    0.687441] R13: 0000000000000000 R14: 00007f2b4b1b3680 R15: 00007f2b4b1b4fa0
+[    0.687742]  </TASK>
+[    0.687857] Kernel Offset: 0xc000000 from 0xffffffff81000000 (relocation range: 0xffffffff80000000-0xffffffffbfffffff)
+[    0.688404] Rebooting in 1 seconds..

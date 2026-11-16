@@ -6,7 +6,7 @@
 
 - [ ] **D02: 最終機能・権限範囲を独立監査する**
   - economics/FastVote、generic contracts、ingress、lifecycleの最終範囲を同一sourceで監査し、指摘修正と独立再検証を終える。tech-lead approvalや過去の狭いscanは代替しない。
-  - M1と監査対象・証拠を共用できる。従来の独立監査実行は提供側の安全判定で停止した。2026-11-16の再試行も部分進捗にとどまり、完走結果はない。
+  - M1と監査対象・証拠を共用できる。旧private sourceの独立scanは1,369ファイル中53ファイルの部分進捗にとどまり、完走結果はない。現行mainの最終監査には転用しない。
   - [ ] 最終sourceの上記4領域を独立監査で通す。
   - [ ] 指摘を修正し、独立に再確認する。
 
@@ -48,8 +48,8 @@
   - 未達: selected-profileの物理host/power/media/fsync、別host writer failoverと下の2つの独立fault条件。通常profileやloopback/TLSの結果を転用しない。実topologyの追加rehearsalはD07。
   - [x] 通常SQLite/ENOSPC・TLS ACK・同host owner-loss・通常VM power/EIOの個別結果を[旧sourceで確認した](docs/development/validation/2026-10-22-m3-ordinary-coverage/README.md)。
   - [ ] selected-profileの物理host/power/media/fsyncと別host writer failoverを通す。
-  - [ ] **独立anchor付きprofileの実guest fault boundaries**: Pending後/source COMMIT前、source COMMIT後/finalize前など元9境界で実guest電源断・write/flush EIO、完全new/旧source safe stop、全12+2+authority tablesとpositive bodiesを確認する。[DR-0266](docs/architecture/decisions/0266-independent-anchor-virtual-fault-profile.md)のsourceと失敗証跡は保持。PR #382のread-only boot診断はproduct fault合格に含めない。
-    - [x] [PR #382](https://github.com/sunriselayer/sunrise-edge/pull/382)で20-byte以下のserialと現行QEMUのread-only 2-disk bootを確認した。
+  - [ ] **独立anchor付きprofileの実guest fault boundaries**: Pending後/source COMMIT前、source COMMIT後/finalize前など元9境界で実guest電源断・write/flush EIO、完全new/旧source safe stop、全12+2+authority tablesとpositive bodiesを確認する。[DR-0266](docs/architecture/decisions/0266-independent-anchor-virtual-fault-profile.md)のsourceと失敗証跡は保持。[診断VM](docs/development/validation/2026-11-16-m3-serial-diagnostic/README.md)では旧21-byte serialの切り詰めを特定し、18-byteへ修正した。read-only bootはproduct fault合格に含めない。
+    - [x] [PR #382](https://github.com/sunriselayer/sunrise-edge/pull/382)で20-byte以下のserialと現行QEMUのread-only 2-disk bootを確認した。選択済みQEMU/host kernel pinと9境界は未達。
     - [ ] 選択したguestで元9境界の電源断・write/flush EIOを通す。
   - [ ] **selected virtual deviceのpartial persistent write**: 実WAL extent/sector、混在した永続bytesとcold receipt-first none/allを対応付ける。単なるEIO/転送上限では完了しない。assessmentとsupporting mechanism2は提供側の安全判定で停止し、完走結果はない。
     - [ ] 実WALのpartial writeを再現する。
