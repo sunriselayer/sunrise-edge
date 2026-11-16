@@ -1,16 +1,16 @@
 # Sunrise Edge: 現在のTODO
 
-更新: 2026-11-14 (Asia/Singapore)。元85チェックのうち71件は完了、元の未完了は下の14件（親11件、子3件）。M2の完了済みfamilyとN1/N2結果・実host接続を可視化する補助チェックは元85件に加えない。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+更新: 2026-11-16 (Asia/Singapore)。元85チェックのうち71件は完了、元の未完了は下の14件（親11件、子3件）。M2の完了済みfamilyとN1/N2結果・実host接続を可視化する補助チェックは元85件に加えない。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
 
 ## コード・検証: 親5件、子3件
 
 - [ ] **D02: 最終機能・権限範囲を独立監査する**
   - economics/FastVote、generic contracts、ingress、lifecycleの最終範囲を同一sourceで監査し、指摘修正と独立再検証を終える。tech-lead approvalや過去の狭いscanは代替しない。
-  - M1と監査対象・証拠を共用できる。従来の独立監査実行は提供側の安全判定で停止したままで、再試行・迂回しない。
+  - M1と監査対象・証拠を共用できる。2026-11-16に利用者の指示で非公開の同一source監査を再開したが、全repoのsource reviewは途中であり、独立最終監査の資格は未達。非公開の指摘は公開issue/PRに書かない。
 
 - [ ] **M1: 固定releaseの独立security/release reviewを終える**
   - code/deployment仕様、contracts、economics、handoff/activation、ingress、storage、signingを固定し、指摘・修正・残余リスクを独立に確認する。D02と同じ範囲の結果は共用する。
-  - 最終reviewは未完了。停止済み監査を旧scanや非security reviewで置き換えない。実配置の承認はD04/D07/M8に残る。
+  - 最終reviewは未完了。再開した監査の部分結果、旧scan、非security reviewを最終資格に転用しない。実配置の承認はD04/D07/M8に残る。
 
 - [ ] **M2: protected signerと操作内容レビューを実装・検証する**
   - 必須範囲: 保護された鍵backend、operator/authority分離、操作ごとの正確な内容確認、拒否・故障、必要な復旧・交換・取消。自動protocol署名と人のasset/governance承認を分ける。
@@ -29,14 +29,14 @@
   - [x] **N1 readiness: 現行sourceの別UID実行結果**: commit `6801bca3`で既存readiness ownerの別UID worker/frontend profileが1 passed/0 failed。raw結果・実行元tree・資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md)に固定。後続の文書commitやM2親の資格へ転用しない。
   - [x] **N2 successor: 現行sourceの別UID実行結果**: commit `abccadfd`の既存recurring ownerが、元の7 epochs/e8・2件の1832-byte候補/committed ACKを保持して1 passed/0 failed。別UID、raw結果、11 artifact不変と資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md#n2-successor-passed-2026-11-13)に固定。後続sourceやM2/M7親の資格へ転用しない。
   - [x] **original bond: 実SQLite hostと保護署名の結合検証**: `b2087f0d`から修正した`3b05f2d2`の既存ownerで、同一genesis/Coinの実host観測から別承認・署名へ接続し、停止後の古いfenceを拒否。standaloneとnode-core handoffは各1 passed/0 failed。後者のpost-genesis Coin currentnessは既存固定応答のまま。失敗・成功rawと範囲は[限定検証記録](docs/development/validation/2026-11-12-m2-bond-realhost/README.md)。最終PR headの全体gateや実鍵資格へ転用しない。
-  - [ ] **ZeroShare専用custody WIP**: 別branchの未検証コードは未統合。fixture作成は提供側の安全判定で停止しており、再試行・迂回しない。実装済み・検証済みとは数えない。
+  - [ ] **ZeroShare専用custody WIP**: 別branchのcompile/wire修正 `4fd072f3` でCLI lib 386 passed/5 ignoredとClippyは成功。別UID Docker fixtureと現行mainへの統合、完全gate/CIは未達で、実装済み・検証済みとは数えない。2026-11-16に利用者の指示でfixture作業を再開した。
   - 現行のN1〜N5区分は[下の表](#m2初期リリース対象の照合-2026-11-03)にまとめる。
 
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**
   - 対象: atomic object/state/nonce/receipt/outbox、indexed delivery、full-read revision/ABA、reopen/fence/ambiguous acknowledgementと実fault boundaries。通常SQLite/ENOSPC、TLS ACK喪失・再送/再起動、同host owner-loss、通常VM power/EIOの個別合格は[旧TODO][historical-todo]と[coverage記録](docs/development/validation/2026-10-22-m3-ordinary-coverage/README.md)に保存した。
   - 未達: selected-profileの物理host/power/media/fsync、別host writer failoverと下の2つの独立fault条件。通常profileやloopback/TLSの結果を転用しない。実topologyの追加rehearsalはD07。
-  - [ ] **独立anchor付きprofileの実guest fault boundaries**: Pending後/source COMMIT前、source COMMIT後/finalize前など元9境界で実guest電源断・write/flush EIO、完全new/旧source safe stop、全12+2+authority tablesとpositive bodiesを確認する。[DR-0266](docs/architecture/decisions/0266-independent-anchor-virtual-fault-profile.md)のsourceと失敗証跡は保持。実guest boot修正は提供側の安全判定で停止し、product control成功0。再試行・迂回しない。
-  - [ ] **selected virtual deviceのpartial persistent write**: 実WAL extent/sector、混在した永続bytesとcold receipt-first none/allを対応付ける。単なるEIO/転送上限では完了しない。assessmentとsupporting mechanism2は提供側の安全判定で停止し、再試行・迂回しない。
+  - [ ] **独立anchor付きprofileの実guest fault boundaries**: Pending後/source COMMIT前、source COMMIT後/finalize前など元9境界で実guest電源断・write/flush EIO、完全new/旧source safe stop、全12+2+authority tablesとpositive bodiesを確認する。[DR-0266](docs/architecture/decisions/0266-independent-anchor-virtual-fault-profile.md)の旧失敗証跡は保持。2026-11-16の[診断VM](docs/development/validation/2026-11-16-m3-serial-diagnostic/README.md)は、旧controllerが要求する21-byte virtio serialを実guestが20 byteに切り詰めることを確認した。旧QEMU/host kernel pinも現hostでは失われており、診断はproduct controlではない。9境界の成功は0。
+  - [ ] **selected virtual deviceのpartial persistent write**: 実WAL extent/sector、混在した永続bytesとcold receipt-first none/allを対応付ける。単なるEIO/転送上限では完了しない。旧assessmentとsupporting mechanism2は停止時のまま。選択profileを復元・再固定していないため、実partial-write検証は未実行。
 
 ### M7: 再現可能なsupported-runtime releaseを作る
 
@@ -95,7 +95,7 @@
 
 ## 作業境界
 
-停止済みD02/M1監査、ZeroShare fixture、M3 torn-WAL assessment/mechanism2、独立anchor VM boot修正は再試行・言い換え・別担当への付け替えをしない。実鍵・host user・security policy・deploy・公開設定はこのTODO整理では変更しない。未選択のTypeScript client、explorer/wallet、Ledger、Unique Asset、multisig、contract upgrade/irreversible relinquishment/atomic migration、ZK、cross-domain atomicity、追加provider/HA/scaleは広告しない。必要になった時は元の条件を参照する。
+利用者は2026-11-16に停止済み監査・障害検証・ZeroShare fixtureの再試行を指示した。再試行では新たな提供側の安全拒否を迂回せず、未実行・部分結果を合格に転用しない。実鍵・host user・security policy・deploy・公開設定はこのTODO整理では変更しない。未選択のTypeScript client、explorer/wallet、Ledger、Unique Asset、multisig、contract upgrade/irreversible relinquishment/atomic migration、ZK、cross-domain atomicity、追加provider/HA/scaleは広告しない。必要になった時は元の条件を参照する。
 
 [historical-todo]: https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/TODO.md
 [historical-m2]: https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/TODO.md#m2初期リリース対象の照合-2026-11-03
