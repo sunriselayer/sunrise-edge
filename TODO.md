@@ -1,8 +1,8 @@
 # Sunrise Edge: 現在のTODO
 
-更新: 2026-11-16 (Asia/Singapore)。元85チェックのうち71件は完了、元の未完了は下の14件（親11件、子3件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+更新: 2026-11-16 (Asia/Singapore)。元85チェックのうち72件は完了、元の未完了は下の13件（親11件、子2件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
 
-## コード・検証: 親5件、子3件
+## コード・検証: 親5件、子2件
 
 - [ ] **D02: 最終機能・権限範囲を独立監査する**
   - economics/FastVote、generic contracts、ingress、lifecycleの最終範囲を同一sourceで監査し、指摘修正と独立再検証を終える。tech-lead approvalや過去の狭いscanは代替しない。
@@ -22,7 +22,7 @@
   - 完了済みの小項目は下のチェックで保持する。各結果のsource/profileと限界は[旧TODO][historical-todo]と[signing contracts](docs/architecture/signing-preparation.md)を参照する。個別合格を全familyの資格に転用しない。
   - 残件: original bondの局所観測と承認・署名前の反復照会はPR #362で実装済み、実hostと保護署名の限定結合も下の小項目で検証済み。選択済みfamilyのlifecycleと元ownerの対応付けは[照合表](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)で整理済み。同一sourceの実UID/RELEASE全体資格、実承認者/鍵enrollmentとM2親の受入は未達。対象外の全prepared型や全identity移行を新しい必須条件にしない。
   - [x] 初期対象を選択済みfamilyに限定し、lifecycleと検証ownerを[対応付けた](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)。
-  - [x] 下のZeroShare componentのコードを[PR #381](https://github.com/sunriselayer/sunrise-edge/pull/381)でmainへ統合した。限定資格は下のCI確認を待つ。
+  - [x] 下のZeroShare componentのコードを[PR #381](https://github.com/sunriselayer/sunrise-edge/pull/381)でmainへ統合し、限定資格を下のCI結果で確認した。
   - [ ] 選択済みfamilyを実UID/RELEASEと実承認者・保護鍵で通し、最終reviewを終える。
   - [x] **publicationの保護承認と取消・同一鍵復旧・交換component**: [専用custody](docs/architecture/local-publication-custody.md)と[lifecycle](docs/architecture/publication-custody-lifecycle.md)の既存実UID/PTY/拒否・restart結果に限定する。
   - [x] **genesis Standard Assetのtransfer・split/merge・mint/burn・create component**: [transfer](docs/architecture/standard-asset-transfer-custody.md)、[split/merge](docs/architecture/standard-asset-split-merge-custody.md)、[mint/burn](docs/architecture/standard-asset-mint-burn-custody.md)、[create](docs/architecture/standard-asset-create-asset-custody.md)の実CLI・別UID結果と、旧TODOに記録した限定復旧・live Coin handoffを含む。
@@ -36,11 +36,11 @@
   - [x] **N1 readiness: 現行sourceの別UID実行結果**: commit `6801bca3`で既存readiness ownerの別UID worker/frontend profileが1 passed/0 failed。raw結果・実行元tree・資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md)に固定。後続の文書commitやM2親の資格へ転用しない。
   - [x] **N2 successor: 現行sourceの別UID実行結果**: commit `abccadfd`の既存recurring ownerが、元の7 epochs/e8・2件の1832-byte候補/committed ACKを保持して1 passed/0 failed。別UID、raw結果、11 artifact不変と資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md#n2-successor-passed-2026-11-13)に固定。後続sourceやM2/M7親の資格へ転用しない。
   - [x] **original bond: 実SQLite hostと保護署名の結合検証**: `b2087f0d`から修正した`3b05f2d2`の既存ownerで、同一genesis/Coinの実host観測から別承認・署名へ接続し、停止後の古いfenceを拒否。standaloneとnode-core handoffは各1 passed/0 failed。後者のpost-genesis Coin currentnessは既存固定応答のまま。失敗・成功rawと範囲は[限定検証記録](docs/development/validation/2026-11-12-m2-bond-realhost/README.md)。最終PR headの全体gateや実鍵資格へ転用しない。
-  - [ ] **ZeroShare専用custody component**: [PR #381](https://github.com/sunriselayer/sunrise-edge/pull/381)の実装はCI終端前にmainへ統合された。残るCI結果まで限定資格は開き、実承認者・実鍵はM2親で追う。
+  - [x] **ZeroShare専用custody component**: [PR #381](https://github.com/sunriselayer/sunrise-edge/pull/381)の実装はCI終端前にmainへ統合されたが、後に同じPR headの全8チェックが成功した。実承認者・実鍵とM2全体資格は親で追う。
     - [x] 専用kind 7と操作内容guardをPR head `238884fd`に実装した。
     - [x] 同headのCLI owning 27件、実Seal sourceを使う別UID/PTY・拒否・restartの限定Docker fixture 1件と独立静的reviewを通した。
     - [x] PR #381を通常merge `969a81db`でmainへ統合した。
-    - [ ] 残るhosted SQLite再現レーンと集約`check`を確認する。
+    - [x] PR head `238884fd`の[CI run 43819333018](https://github.com/sunriselayer/sunrise-edge/actions/runs/43819333018)で7レーンと集約`check`が成功した（`recurring-sqlite` 5h13m40s、最終`check` 12s）。
   - 現行のN1〜N5区分は[下の表](#m2初期リリース対象の照合-2026-11-03)にまとめる。
 
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**
