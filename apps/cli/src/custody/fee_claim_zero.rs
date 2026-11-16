@@ -12,8 +12,8 @@
 //! any workflow or socket I/O.
 
 use sunrise_edge_client::{
-    Address, FeeClaimIntent, FeeClaimOperation, FeeClaimPrepareRequest, FeeClaimReview,
-    PreparedFeeClaim, SuccessorWorkflowAuthority,
+    FeeClaimIntent, FeeClaimOperation, FeeClaimPrepareRequest, FeeClaimReview, PreparedFeeClaim,
+    SuccessorWorkflowAuthority,
 };
 
 use crate::error::CliError;
@@ -30,7 +30,7 @@ fn failure(error: impl std::error::Error + Send + Sync + 'static) -> CliError {
 /// mismatch, a zero `request_id`, or a claimant key custody is not pinned to
 /// sign for. Runs before `PreparedFeeClaim::prepare`, before any workflow is
 /// loaded, and before any socket is touched, with no fallback.
-pub(super) fn require_zero_share_profile(
+pub(crate) fn require_zero_share_profile(
     request: &FeeClaimPrepareRequest,
     intent: &FeeClaimIntent,
     expected_claimant_public_key: [u8; 32],
@@ -113,7 +113,7 @@ impl FeeClaimZeroTrust {
 mod tests {
     use super::*;
     use sunrise_edge_client::{
-        ChainId, Digest32, Epoch, HashAlgorithmId, ObjectId, ObjectRef, ProtocolVersion,
+        Address, ChainId, Digest32, Epoch, HashAlgorithmId, ObjectId, ObjectRef, ProtocolVersion,
         PublicationContext, ValidatorId,
     };
 

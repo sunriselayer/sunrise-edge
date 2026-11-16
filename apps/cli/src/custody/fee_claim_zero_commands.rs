@@ -54,9 +54,7 @@ fn invalid(message: &'static str) -> CliError {
 fn trust_specs() -> Vec<crate::args::FlagSpec> {
     let mut specs: Vec<crate::args::FlagSpec> =
         vec![scalar(CONFIG), scalar(GENESIS), scalar(GENESIS_DIGEST)];
-    specs.extend(crate::commands::successor_pins::successor_flag_specs(
-        false,
-    ));
+    specs.extend(crate::commands::successor_pins::successor_flag_specs(false));
     specs
 }
 
@@ -75,15 +73,16 @@ fn load_trust(
     )
     .map_err(fail)?;
     let digest: [u8; 32] = decode_hex_32(GENESIS_DIGEST, parsed.require(GENESIS_DIGEST)?)?;
-    let workflow: SuccessorWorkflowAuthority = crate::commands::successor_pins::load_successor_pins(
-        parsed,
-        parsed.require(GENESIS)?,
-        digest,
-        &resolver,
-        &signing_context,
-        Some(expected.domain()),
-    )?
-    .ok_or_else(|| invalid("fee-claim custody requires the --successor-* artifact flags"))?;
+    let workflow: SuccessorWorkflowAuthority =
+        crate::commands::successor_pins::load_successor_pins(
+            parsed,
+            parsed.require(GENESIS)?,
+            digest,
+            &resolver,
+            &signing_context,
+            Some(expected.domain()),
+        )?
+        .ok_or_else(|| invalid("fee-claim custody requires the --successor-* artifact flags"))?;
     Ok(FeeClaimZeroTrust::new(config.clone(), workflow))
 }
 
@@ -110,7 +109,8 @@ fn read_intent(parsed: &ParsedArgs) -> Result<FeeClaimIntent, CliError> {
         0o700,
         MAX_FEE_CLAIM_INTENT_BYTES,
     )?;
-    let decoded: FeeClaimIntent = sunrise_edge_client::decode_fee_claim_intent(&bytes).map_err(fail)?;
+    let decoded: FeeClaimIntent =
+        sunrise_edge_client::decode_fee_claim_intent(&bytes).map_err(fail)?;
     if sunrise_edge_client::encode_fee_claim_intent(&decoded).map_err(fail)? != bytes {
         return Err(invalid(
             "--intent is not the exact canonical FeeClaimIntent encoding",
@@ -151,8 +151,7 @@ pub(super) fn approve_fee_claim<I: IntoIterator<Item = OsString>>(args: I) -> Re
         scalar(APPROVALS),
         scalar("--expires-in-seconds"),
     ]);
-    let (parsed, schedules) =
-        crate::commands::hash_suite_pins::parse_pinned_flags(args, &specs)?;
+    let (parsed, schedules) = crate::commands::hash_suite_pins::parse_pinned_flags(args, &specs)?;
     let config: CustodyConfig = CustodyConfig::load(Path::new(parsed.require(CONFIG)?))?;
     let request: FeeClaimPrepareRequest = read_request(&parsed)?;
     let intent: FeeClaimIntent = read_intent(&parsed)?;

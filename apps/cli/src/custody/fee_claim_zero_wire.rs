@@ -20,8 +20,10 @@ use sunrise_edge_client::{
 /// The one currently supported ZeroShare fee-claim message kind.
 pub(super) const SIGN_FEE_CLAIM_ZERO_MESSAGE: u8 = 7;
 
-/// version(1) + message kind(1) + request_len(4) + intent_len(4).
-const HEADER_BYTES: usize = 1 + 1 + 4 + 4;
+/// version(1) + message kind(1) + request_len(4).
+const REQUEST_START_BYTES: usize = 1 + 1 + 4;
+/// Minimum frame length, including the intent length field after the request.
+const HEADER_BYTES: usize = REQUEST_START_BYTES + 4;
 pub(super) const MAX_FEE_CLAIM_ZERO_REQUEST_BYTES: usize =
     HEADER_BYTES + MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES + MAX_FEE_CLAIM_INTENT_BYTES;
 
@@ -109,7 +111,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<FeeClaimZeroRequest, CustodyWireErr
             maximum: MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
         });
     }
-    let request_start: usize = HEADER_BYTES;
+    let request_start: usize = REQUEST_START_BYTES;
     let request_end: usize =
         request_start
             .checked_add(request_len)
@@ -269,7 +271,8 @@ mod tests {
     #[test]
     fn decode_rejects_a_request_length_over_the_bound() {
         let mut bytes: Vec<u8> = encode(&sample()).unwrap();
-        bytes[2..6].copy_from_slice(&(MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES as u32 + 1).to_be_bytes());
+        bytes[2..6]
+            .copy_from_slice(&(MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES as u32 + 1).to_be_bytes());
         assert!(matches!(
             decode(&bytes),
             Err(CustodyWireError::ArtifactTooLarge { .. })
@@ -306,16 +309,19 @@ mod tests {
         let request_len: u32 = u32::from_be_bytes(encoded[2..6].try_into().unwrap());
         let request_bytes: Vec<u8> = request.request.encode().unwrap();
         assert_eq!(request_len as usize, request_bytes.len());
-        assert_eq!(&encoded[6..6 + request_bytes.len()], request_bytes.as_slice());
+        assert_eq!(
+            &encoded[6..6 + request_bytes.len()],
+            request_bytes.as_slice()
+        );
         let intent_len_start: usize = 6 + request_bytes.len();
-        let intent_len: u32 =
-            u32::from_be_bytes(encoded[intent_len_start..intent_len_start + 4].try_into().unwrap());
+        let intent_len: u32 = u32::from_be_bytes(
+            encoded[intent_len_start..intent_len_start + 4]
+                .try_into()
+                .unwrap(),
+        );
         let intent_bytes: Vec<u8> =
             sunrise_edge_client::encode_fee_claim_intent(&request.intent).unwrap();
         assert_eq!(intent_len as usize, intent_bytes.len());
-        assert_eq!(
-            &encoded[intent_len_start + 4..],
-            intent_bytes.as_slice()
-        );
+        assert_eq!(&encoded[intent_len_start + 4..], intent_bytes.as_slice());
     }
 }

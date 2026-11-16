@@ -177,11 +177,12 @@ pub(crate) fn request_fee_claim_zero_signature(
     request: &sunrise_edge_client::FeeClaimPrepareRequest,
     intent: &sunrise_edge_client::FeeClaimIntent,
 ) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyError> {
-    let frame: Vec<u8> = super::fee_claim_zero_wire::encode(&super::fee_claim_zero_wire::FeeClaimZeroRequest {
-        request: request.clone(),
-        intent: intent.clone(),
-    })
-    .map_err(CustodyError::Wire)?;
+    let frame: Vec<u8> =
+        super::fee_claim_zero_wire::encode(&super::fee_claim_zero_wire::FeeClaimZeroRequest {
+            request: request.clone(),
+            intent: intent.clone(),
+        })
+        .map_err(CustodyError::Wire)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()

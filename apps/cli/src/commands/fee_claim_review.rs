@@ -151,7 +151,9 @@ fn select_fee_claim_signer(parsed: &ParsedArgs) -> Result<FeeClaimSignerChoice, 
     let seed: bool = parsed.get("--claimant-seed-file").is_some();
     let custody_socket: bool = parsed.get(crate::signer::CUSTODY_SOCKET).is_some();
     let custody_uid: bool = parsed.get(crate::signer::CUSTODY_UID).is_some();
-    let custody_key: bool = parsed.get(crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY).is_some();
+    let custody_key: bool = parsed
+        .get(crate::signer::CUSTODY_EXPECTED_PUBLIC_KEY)
+        .is_some();
     let custody_any: bool = custody_socket || custody_uid || custody_key;
     if seed && custody_any {
         return Err(CliError::ConflictingSignerSelection);
@@ -324,7 +326,10 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I, sign: bool) -> Resu
                     prepared.request(),
                     prepared.intent(),
                 )?;
-                (prepared.finalize(signature.to_vec()).map_err(failure)?, None)
+                (
+                    prepared.finalize(signature.to_vec()).map_err(failure)?,
+                    None,
+                )
             }
         };
     let encoded: Vec<u8> =
@@ -337,7 +342,11 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(args: I, sign: bool) -> Resu
         &candidate,
     )
     .map_err(failure)?;
-    let mut retained: Vec<&str> = vec![request_path, intent_path, parsed.require("--ordered-genesis-manifest")?];
+    let mut retained: Vec<&str> = vec![
+        request_path,
+        intent_path,
+        parsed.require("--ordered-genesis-manifest")?,
+    ];
     if let Some(seed_path) = retained_seed_path {
         retained.push(seed_path);
     }
@@ -539,7 +548,10 @@ mod tests {
         ]);
         assert!(matches!(
             select_fee_claim_signer(&complete),
-            Ok(FeeClaimSignerChoice::Custody { custody_uid: 1001, .. })
+            Ok(FeeClaimSignerChoice::Custody {
+                custody_uid: 1001,
+                ..
+            })
         ));
     }
 
