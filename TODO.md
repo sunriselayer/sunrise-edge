@@ -103,7 +103,7 @@
 
 ## G: 共通acceptanceと証拠記録
 
-下位チェックは機能や主要な故障時挙動を確認した時点で更新する。下位チェックごとに完全gateを繰り返さず、元85件の受入・releaseは以下の共通条件で判定する。
+下位チェックと選択済みfamilyの限定componentは、owning test・主要な故障時挙動・必要な実UID fixture・独立reviewで実用性を確認した時点で閉じる。各componentに完全local gateを繰り返さない。親とreleaseの受入には以下の共通条件を適用する。
 
 同じhead/profile/scopeの結果を参照で共用します。別ソース・祖先・部分結果の転用、
 未実行/skip/cancelを成功扱い、selector削減、delay短縮やfault除外はしません。
@@ -111,8 +111,7 @@
 1. 実際のsource/tree、lock/tool inputs、profile、実行範囲・独立reviewを固定する。
    refactorはowner・migrated callers・removed duplicateとbytes/error/authority保持を示す。
 2. proportionalなowning/vector/adversarial/store/HTTP/CLI/fault controlsを実行する。
-3. literal `npm ci --prefix adapters/cloudflare-workers` と完全な
-   `./scripts/check-all.sh`。全7 unconditional ownersとsuccess-only `check` を残す。
+3. 通常PRは全7 unconditional ownersとsuccess-only `check` を通す。親やreleaseの受入で完全local profileを要求する場合は、最終sourceでliteral `npm ci --prefix adapters/cloudflare-workers` と完全な `./scripts/check-all.sh` を実行する。
 4. PG実装/依存変更またはPG claimにはselected-sourceの5-group complete PG/full profile。
    Docker-only live prerequisitesを必須とし、E2を別headへ借用しない。
 5. M7/R4では現在の13 Native targetsのfresh A/Bと完全比較・provenance。
