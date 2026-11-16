@@ -7,6 +7,11 @@ use sha2::{Digest, Sha256};
 
 const PROFILE: &str = "native-sqlite-qemu-anchored-v1";
 const AUTHORITY: &str = "/authority";
+// Linux virtio-blk exposes at most VIRTIO_BLK_ID_BYTES (20) serial bytes.
+// Keep all 16 pinned nonce hex bytes while distinguishing the two devices.
+const VIRTIO_BLK_SERIAL_BYTES: usize = 20;
+const SOURCE_SERIAL_PREFIX: &str = "s-";
+const AUTHORITY_SERIAL_PREFIX: &str = "a-";
 const CASES: [&str; 9] = [
     "ack",
     "prepared",
@@ -167,19 +172,33 @@ fn guest_proof() -> Option<GuestProof> {
         ROOT,
         "/dev/vda1",
         "/sys/block/vda/serial",
-        &format!("se-s-{}", &proof.common.nonce[..16]),
+        &expected_device_serial(SOURCE_SERIAL_PREFIX, &proof.common.nonce),
     );
     mounted(
         AUTHORITY,
         "/dev/vdb1",
         "/sys/block/vdb/serial",
-        &format!("se-a-{}", &proof.common.nonce[..16]),
+        &expected_device_serial(AUTHORITY_SERIAL_PREFIX, &proof.common.nonce),
     );
     assert_ne!(
         fs::metadata(ROOT).unwrap().dev(),
         fs::metadata(AUTHORITY).unwrap().dev()
     );
     Some(proof)
+}
+fn expected_device_serial(prefix: &str, nonce: &str) -> String {
+    let serial = format!("{prefix}{}", &nonce[..16]);
+    assert!(serial.len() <= VIRTIO_BLK_SERIAL_BYTES);
+    serial
+}
+#[test]
+fn anchored_guest_device_serials_fit_virtio_blk_id() {
+    let nonce = "0123456789abcdef0123456789abcdef";
+    let source = expected_device_serial(SOURCE_SERIAL_PREFIX, nonce);
+    let authority = expected_device_serial(AUTHORITY_SERIAL_PREFIX, nonce);
+    assert_eq!(source, "s-0123456789abcdef");
+    assert_eq!(authority, "a-0123456789abcdef");
+    assert_ne!(source, authority);
 }
 #[test]
 fn anchored_guest_parser_requires_exact_owner_frames_and_cold_identity() {
