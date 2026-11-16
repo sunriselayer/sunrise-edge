@@ -51,3 +51,13 @@ so this later diagnostic does not prove the old boot's sole cause or qualify
 the selected profile. The nine actual guest fault boundaries, complete cold
 oracles and virtual-device partial persistent write remain unrun on a
 re-established exact profile.
+The follow-up guest test source now expects distinct 18-byte `s-`/`a-` plus
+16-hex serials. The external VM controller and selected-profile run have not
+yet been updated or executed with that source.
+The same bounded diagnostic was repeated with `serial=s-0123456789abcdef`
+and an initramfs that expected that value. It exited 0 and observed exact
+18-byte equality; [the second raw output](qemu-short.raw) has SHA-256
+`860fe1232a7f3f20d58e55f256a1840d647270f386a41506ee57839660fe1beb`.
+Its diagnostic initramfs SHA-256 is
+`1788a8127a77a53156b71061e3e64da687cbb978f5386a0e2677bfd981a67d48`.
+This checks virtio serial transport only, without an M3 product control.

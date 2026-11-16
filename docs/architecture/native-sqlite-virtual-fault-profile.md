@@ -128,5 +128,8 @@ separate boundaries. Pending-old requires unchanged safe stop; exact-new require
 normal real reconciliation before fresh fencing/replay/new work. A forensic
 image copy is never adopted as current authority. Its finite owner budgets and
 same-original-authority identity differ explicitly from the ordinary profile.
+The source and authority virtio serials use distinct `s-`/`a-` prefixes plus
+16 nonce hex characters, fitting the 20-byte virtio-blk ID. The external
+controller must request those exact serials before its guest comparison.
 Execution/completion is recorded in TODO, never inferred from source or QMP
 configuration. Neither variant alone demonstrates torn persistent WAL writes.
