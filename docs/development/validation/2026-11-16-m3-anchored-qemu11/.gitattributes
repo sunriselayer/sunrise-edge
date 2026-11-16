@@ -1,0 +1,5 @@
+controller.py -text
+terminal.json -text -diff
+raw.log -text -diff
+vm-streams.sha256 -text
+source-receipt.json -text

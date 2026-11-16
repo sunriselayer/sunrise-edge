@@ -1,8 +1,8 @@
 # Sunrise Edge: 現在のTODO
 
-更新: 2026-11-16 (Asia/Singapore)。元85チェックのうち72件は完了、元の未完了は下の13件（親11件、子2件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+更新: 2026-11-16 (Asia/Singapore)。元85チェックのうち73件は完了、元の未完了は下の12件（親11件、子1件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
 
-## コード・検証: 親5件、子2件
+## コード・検証: 親5件、子1件
 
 - [ ] **D02: 最終機能・権限範囲を独立監査する**
   - economics/FastVote、generic contracts、ingress、lifecycleの最終範囲を同一sourceで監査し、指摘修正と独立再検証を終える。tech-lead approvalや過去の狭いscanは代替しない。
@@ -45,12 +45,12 @@
 
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**
   - 対象: atomic object/state/nonce/receipt/outbox、indexed delivery、full-read revision/ABA、reopen/fence/ambiguous acknowledgementと実fault boundaries。通常SQLite/ENOSPC、TLS ACK喪失・再送/再起動、同host owner-loss、通常VM power/EIOの個別合格は[旧TODO][historical-todo]と[coverage記録](docs/development/validation/2026-10-22-m3-ordinary-coverage/README.md)に保存した。
-  - 未達: selected-profileの物理host/power/media/fsync、別host writer failoverと下の2つの独立fault条件。通常profileやloopback/TLSの結果を転用しない。実topologyの追加rehearsalはD07。
+  - 未達: selected-profileの物理host/power/media/fsync、別host writer failoverと下のpartial persistent write。通常profileやloopback/TLSの結果を転用しない。実topologyの追加rehearsalはD07。
   - [x] 通常SQLite/ENOSPC・TLS ACK・同host owner-loss・通常VM power/EIOの個別結果を[旧sourceで確認した](docs/development/validation/2026-10-22-m3-ordinary-coverage/README.md)。
   - [ ] selected-profileの物理host/power/media/fsyncと別host writer failoverを通す。
-  - [ ] **独立anchor付きprofileの実guest fault boundaries**: Pending後/source COMMIT前、source COMMIT後/finalize前など元9境界で実guest電源断・write/flush EIO、完全new/旧source safe stop、全12+2+authority tablesとpositive bodiesを確認する。[DR-0266](docs/architecture/decisions/0266-independent-anchor-virtual-fault-profile.md)のsourceと失敗証跡は保持。[診断VM](docs/development/validation/2026-11-16-m3-serial-diagnostic/README.md)では旧21-byte serialの切り詰めを特定し、18-byteへ修正した。read-only bootはproduct fault合格に含めない。
-    - [x] [PR #382](https://github.com/sunriselayer/sunrise-edge/pull/382)で20-byte以下のserialと現行QEMUのread-only 2-disk bootを確認した。選択済みQEMU/host kernel pinと9境界は未達。
-    - [ ] 選択したguestで元9境界の電源断・write/flush EIOを通す。
+  - [x] **独立anchor付きprofileの実guest fault boundaries**: [DR-0266](docs/architecture/decisions/0266-independent-anchor-virtual-fault-profile.md)の元9境界を、現行のQEMU 11.1.3/Arch 7.2.15を固定した[ローカル仮想owner](docs/development/validation/2026-11-16-m3-anchored-qemu11/README.md)で通した。記録前の固定source `ef6e066d`の実guest電源断・write/flush EIO、cold完全new/旧source safe stop、全12+2+authority tablesとpositive bodies、別の独立reviewを確認。旧QEMU 10.2.2試行の失敗は保持し、物理hostやpartial WALへ転用しない。
+    - [x] [PR #382](https://github.com/sunriselayer/sunrise-edge/pull/382)で20-byte以下のserialと現行QEMUのread-only 2-disk bootを確認した。これ単独はproduct fault合格ではない。
+    - [x] 選択したguestで元9境界の電源断・write/flush EIOと各cold oracleを通し、全18 QEMU socket・39子プロセス・cgroupを解放した。
   - [ ] **selected virtual deviceのpartial persistent write**: 実WAL extent/sector、混在した永続bytesとcold receipt-first none/allを対応付ける。単なるEIO/転送上限では完了しない。assessmentとsupporting mechanism2は提供側の安全判定で停止し、完走結果はない。
     - [ ] 実WALのpartial writeを再現する。
     - [ ] cold restartでreceipt-first none/allを確認する。
@@ -128,7 +128,7 @@
 
 ## 作業境界
 
-利用者は2026-11-16に停止済み監査・障害検証の再試行を指示した。ZeroShareの限定fixtureはPR #381、独立anchor VMのread-only診断はPR #382で進んだ。D02/M1独立監査とM3 torn-WAL assessment/mechanism2は未完走であり、部分結果を合格に転用しない。実鍵・host user・security policy・deploy・公開設定はこのTODO整理では変更しない。未選択のTypeScript client、explorer/wallet、Ledger、Unique Asset、multisig、contract upgrade/irreversible relinquishment/atomic migration、ZK、cross-domain atomicity、追加provider/HA/scaleは広告しない。必要になった時は元の条件を参照する。
+利用者は2026-11-16に停止済み監査・障害検証の再試行を指示した。ZeroShareの限定fixtureはPR #381、独立anchor VMのserial診断はPR #382、現行pinの元9境界は上の検証記録で進んだ。D02/M1独立監査とM3 torn-WAL assessment/mechanism2は未完走であり、部分結果を合格に転用しない。実鍵・host user・security policy・deploy・公開設定はこのTODO整理では変更しない。未選択のTypeScript client、explorer/wallet、Ledger、Unique Asset、multisig、contract upgrade/irreversible relinquishment/atomic migration、ZK、cross-domain atomicity、追加provider/HA/scaleは広告しない。必要になった時は元の条件を参照する。
 
 [historical-todo]: https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/TODO.md
 [historical-m2]: https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/TODO.md#m2初期リリース対象の照合-2026-11-03
