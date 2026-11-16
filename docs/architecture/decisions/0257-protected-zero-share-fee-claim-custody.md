@@ -7,7 +7,7 @@ Status: Accepted design. Qualification is tracked in TODO.md.
 ## Decision
 
 Extend the trusted-local-OS custody boundary (DR-0238/0246/0249/0253/0255)
-with a fifth family that protects the historical claimant key used to sign a
+with a dedicated family that protects the historical claimant key used to sign a
 `FeeClaimOperation::ZeroShare` fee claim (DR-0137/DR-0214/DR-0245). This is
 the minimum protected slice: ZeroShare releases no value and carries no
 embedded transaction, so there is no raw leg to approve and no payment custody
@@ -73,6 +73,11 @@ kind 5 (create-asset), and kind 6 (positive fee split) keep their existing decod
 `serve-transfer`/`serve-split-merge`/`serve-mint-burn`/`serve-create`/
 `serve-fee-split` policies unchanged; a kind-7 frame is refused by all six, and kind 1–6
 frames are refused by the new `serve-fee-claim`.
+
+Integration note (2026-11-16): PositiveFeeSplit on the selected main source
+already owns adapter-local kind 6. The previously unmerged ZeroShare WIP
+therefore takes kind 7 before qualification or release. The PositiveFeeSplit
+wire and historical vectors remain unchanged.
 
 `custody approve-fee-claim` requires a real terminal and a typed
 `APPROVE-FEE-CLAIM-ZERO` confirmation line naming the claimant, validator,

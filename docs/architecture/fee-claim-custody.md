@@ -117,7 +117,8 @@ existing whole-frame `ApprovalRecord` unchanged.
 
 `serve-fee-claim` is a distinct kind-7 decoder and policy: a kind 1–6 frame
 sent to it refuses, and a kind-7 frame sent to `serve`/`serve-transfer`/
-`serve-split-merge`/`serve-mint-burn`/`serve-create`/`serve-fee-split` refuses too. To produce
+`serve-split-merge`/`serve-mint-burn`/`serve-create`/`serve-fee-split`
+refuses too. To produce
 the raw signature the socket returns, `serve-fee-claim` uses a small
 `CapturingSigner` wrapping the local signer as an `ExternalSigner`, passed
 to `PreparedFeeClaim::sign_and_finalize_external` — this keeps the SDK's own
@@ -144,3 +145,27 @@ stays exclusively with ordered execution at apply time. Split/FinalTransfer
 custody, key recovery/rotation for this family, live submission of a
 custody-produced candidate, automatic protocol signing, and real keys or
 ceremony are all out of scope for this slice.
+
+## Opt-in separate-UID fixture
+
+The existing ignored `conditional_readiness_sqlite` acceptance owns the
+complete frozen/drained source, sealed history export, activation and live
+successor host. With `SUNRISE_ZERO_SHARE_DOCKER_CLI` set to an absolute
+same-source `sunrise-edge-cli` executable, that owner inspects a real
+ZeroShare entitlement, asks the live host for the unsigned request/intent,
+and saves only those files, the genesis manifest and the four verified
+successor archive roles in a temporary private package. It then selects the
+`--fee-claim-source` mode of
+`scripts/check-docker-custody-fixture-1013.mjs`. The package and Docker
+volume are removed by their respective owners after the run.
+
+The Docker mode keeps the existing pinned image, disabled network, read-only
+root, 64 MiB `noswap` tmpfs, 512 MiB memory, 64 PID and one-CPU limits. It
+copies the package into distinct custody and operator UID directories and
+lets only the custody UID read the disposable historical fixture seed from
+an inherited private descriptor. It checks terminal-only approval, no
+approval and tampered-input refusals, wrong pinned key, archive tampering,
+peer UID refusal, exact approved candidate bytes against the historical
+seed path, and revocation in the same server and after restart. This profile
+is explicit; the ordinary readiness and Docker custody fixture selectors
+do not acquire a Docker prerequisite or alter their family coverage.

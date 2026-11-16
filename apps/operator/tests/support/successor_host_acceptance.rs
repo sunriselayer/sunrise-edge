@@ -2293,6 +2293,203 @@ pub async fn run(
     tokio::task::block_in_place(|| accept(fixture, inputs, seal, &export, original_round));
 }
 
+/// The Docker profile is explicit because the normal compiled readiness lane
+/// owns the complete Seal sequence but does not require a local Docker daemon.
+/// Its input is prepared by the real activated host and the verified workflow.
+fn maybe_run_zero_share_docker(
+    fixture: &Fixture,
+    inputs: &SuccessorProcessInputs,
+    workflow: &SuccessorWorkflowAuthority,
+    export: &Path,
+    hosts: &[HostProcess],
+) {
+    fn copy_archive_tree(source: &Path, target: &Path) {
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() == ".cut-staging-v1" {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(entry.path()).unwrap();
+            let destination = target.join(entry.file_name());
+            if metadata.file_type().is_symlink() {
+                panic!("genuine ZeroShare archive contains a symlink");
+            }
+            if metadata.is_dir() {
+                std::fs::create_dir(&destination).unwrap();
+                copy_archive_tree(&entry.path(), &destination);
+            } else if metadata.is_file() {
+                std::fs::copy(entry.path(), destination).unwrap();
+            } else {
+                panic!("genuine ZeroShare archive contains a non-regular entry");
+            }
+        }
+    }
+    let Ok(cli_binary) = std::env::var("SUNRISE_ZERO_SHARE_DOCKER_CLI") else {
+        return;
+    };
+    assert!(
+        !inputs.recur_changed_committee,
+        "Docker ZeroShare profile selects the original committee"
+    );
+    let (claimant_index, _) = (0..fixture.network.validators.len())
+        .map(|index| {
+            (
+                index,
+                inspect_imported_share(fixture, inputs, workflow, export, index),
+            )
+        })
+        .find(|(_, view)| {
+            view.entitlement.kind == Some(node_core::fee_claims::FeeClaimKind::ZeroShare)
+                && view.entitlement.amount == 0
+        })
+        .expect("the genuine two-unit fee has a ZeroShare original claimant");
+    let claimant = &fixture.network.validators[claimant_index];
+    let seed_byte = claimant.seed[0];
+    assert!([0xa1, 0xa2, 0xa3, 0xa4].contains(&seed_byte));
+    assert!(claimant.seed.iter().all(|byte| *byte == seed_byte));
+    let public: [u8; 32] = ed25519_zebra::VerificationKey::from(&claimant.signing_key).into();
+    let next = workflow.expected_context().clone();
+    let request_id = epoch_request_id(next.epoch().get(), 0xb7);
+    let request = node_wire::FeeClaimPrepareRequest {
+        context: next,
+        escrow_request_id: fixture.network.request_id,
+        request_id,
+        validator_id: claimant.validator_id,
+        claimant_public_key: public,
+        recipient: objects::Address::new(public),
+        signed_leg: None,
+    };
+    let intent = Client::new(transport(hosts[0].address))
+        .prepare_successor_fee_claim(workflow, &request, None)
+        .unwrap();
+    sunrise_edge_client::verify_prepared_fee_claim(workflow, &request, &intent).unwrap();
+    assert_eq!(
+        intent.operation,
+        node_core::fee_claims::codec::FeeClaimOperation::ZeroShare
+    );
+    assert_eq!(intent.share_amount, 0);
+    let retained =
+        sunrise_edge_client::PreparedFeeClaim::prepare(workflow, &request, intent.clone()).unwrap();
+    let review = sunrise_edge_client::FeeClaimReview::build(&retained).unwrap();
+    let signed = sunrise_edge_client::sign_prepared_fee_claim(
+        workflow,
+        &request,
+        intent.clone(),
+        claimant.seed,
+    )
+    .unwrap();
+    let baseline =
+        sunrise_edge_client::fee_claim_candidate(workflow, request_id, signed, HOST_CHECKPOINT)
+            .unwrap();
+    let source = crate::fixture::Directory::new("zero-share-docker-source");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&source.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    for (name, origin) in [
+        ("plan", inputs.plan_history.as_path()),
+        ("cut", inputs.cut.as_path()),
+        ("history", export),
+        ("certificate", inputs.certificate.as_path()),
+    ] {
+        let destination = source.0.join(name);
+        std::fs::create_dir(&destination).unwrap();
+        copy_archive_tree(origin, &destination);
+    }
+    std::fs::copy(
+        fixture.directory.0.join("genesis.bin"),
+        source.0.join("genesis.bin"),
+    )
+    .unwrap();
+    std::fs::write(source.0.join("request.bin"), request.encode().unwrap()).unwrap();
+    std::fs::write(
+        source.0.join("intent.bin"),
+        node_core::fee_claims::codec::encode_fee_claim_intent(&intent).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(source.0.join("baseline.candidate"), baseline).unwrap();
+    std::fs::write(
+        source.0.join("confirmation-fields.txt"),
+        format!(
+            "claimant={}\nvalidator_id={}\ncertificate_epoch={}\ncontext_chain_id={}\ncontext_protocol_version={}\ncontext_epoch={}\nrequest_id={}\nescrow_request_id={}\nresource_domain={:#06x}\nresource_value={}\nexpected_generation={}\nexpected_fee_output_id={}\nexpected_fee_output_version={}\nexpected_fee_output_digest={}\nexpected_previous_row_digest={}\nexpected_next_row_digest={}\nshare_amount={}\nrecipient={}\nintent_digest={}\n",
+            review.claimant_hex(),
+            review.validator_id_hex(),
+            review.certificate_epoch(),
+            review.chain_id(),
+            review.protocol_version(),
+            review.epoch(),
+            review.request_id_hex(),
+            review.escrow_request_id_hex(),
+            review.resource_domain(),
+            review.resource_value_hex(),
+            review.expected_generation(),
+            review.expected_fee_output().id_hex(),
+            review.expected_fee_output().version(),
+            review.expected_fee_output().digest_hex(),
+            review.expected_previous_row_digest_hex(),
+            review.expected_next_row_digest_hex(),
+            intent.share_amount,
+            review.recipient_hex(),
+            review.intent_digest_hex(),
+        ),
+    )
+    .unwrap();
+    let seed_path = source.0.join("seed.hex");
+    std::fs::write(&seed_path, hex(&claimant.seed)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&seed_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    std::fs::write(
+        source.0.join("meta.txt"),
+        format!(
+            "chain_id={}\nprotocol_version={}\nepoch={}\ngenesis_epoch={}\ndomain={}\ngenesis_digest={}\npublic_key={}\nrequest_id={}\n",
+            fixture.network.chain_id.as_str(),
+            fixture.network.protocol_version.get(),
+            workflow.expected_context().epoch().get(),
+            fixture.network.epoch.get(),
+            hex(fixture.network.domain.as_bytes()),
+            hex(&fixture.network.manifest_digest),
+            hex(&public),
+            hex(&request_id),
+        ),
+    )
+    .unwrap();
+    let output = std::process::Command::new("node")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/check-docker-custody-fixture-1013.mjs"
+        ))
+        .args([
+            "--cli-binary",
+            &cli_binary,
+            "--test-binary",
+            &cli_binary,
+            "--fee-claim-source",
+        ])
+        .arg(&source.0)
+        .output();
+    std::fs::remove_dir_all(&source.0).expect("private ZeroShare source package must be removed");
+    assert!(
+        !source.0.exists(),
+        "private ZeroShare source package still exists"
+    );
+    let output = output.unwrap();
+    assert!(
+        output.status.success(),
+        "ZeroShare Docker fixture failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"zero_share\":true"));
+    println!(
+        "[zero-share-docker] {}",
+        String::from_utf8_lossy(&output.stdout).trim()
+    );
+}
+
 fn accept(
     fixture: &mut Fixture,
     inputs: &SuccessorProcessInputs,
@@ -2405,6 +2602,7 @@ fn accept(
             "hosts serve the verified e+1 scope"
         );
     }
+    maybe_run_zero_share_docker(fixture, inputs, &workflow, export, &hosts);
     let all: Vec<&HostProcess> = hosts.iter().collect();
     let seal_receipt = receipts(&all, seal.request_id);
     let imported_receipt = receipts(&all, fixture.network.request_id);

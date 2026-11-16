@@ -39,6 +39,10 @@ const GENESIS_DIGEST: &str = "--genesis-digest";
 const REQUEST: &str = "--request";
 const INTENT: &str = "--intent";
 const APPROVALS: &str = "--approvals-dir";
+// This profile names the historical row, both digests, the certificate and
+// claimant, and the full intent digest. A valid line exceeds the shorter
+// publication/asset confirmation bound of 1024 bytes.
+const MAX_FEE_CLAIM_CONFIRMATION_LINE_BYTES: usize = 2048;
 
 fn fail(error: impl std::error::Error + Send + Sync + 'static) -> CliError {
     CliError::LocalExecution(Box::new(error))
@@ -175,6 +179,9 @@ pub(super) fn approve_fee_claim<I: IntoIterator<Item = OsString>>(args: I) -> Re
         .checked_add(expires)
         .ok_or(CustodyError::ExpiryOverflow)?;
     let confirmation: String = confirmation_line(&prepared.review, not_after);
+    if confirmation.len() >= MAX_FEE_CLAIM_CONFIRMATION_LINE_BYTES {
+        return Err(CustodyError::ApprovalConfirmationMismatch.into());
+    }
 
     if super::revoke::is_revoked(approvals, &request_id)? {
         return Err(CustodyError::ApprovalRevoked.into());
@@ -184,7 +191,9 @@ pub(super) fn approve_fee_claim<I: IntoIterator<Item = OsString>>(args: I) -> Re
     }
     print!("{}", prepared.render_text());
     println!("Type exactly to approve:\n{confirmation}");
-    if super::approve::read_bounded_confirmation_line(1024)? != confirmation {
+    if super::approve::read_bounded_confirmation_line(MAX_FEE_CLAIM_CONFIRMATION_LINE_BYTES)?
+        != confirmation
+    {
         return Err(CustodyError::ApprovalConfirmationMismatch.into());
     }
 
