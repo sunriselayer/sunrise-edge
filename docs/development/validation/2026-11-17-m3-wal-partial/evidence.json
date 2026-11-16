@@ -1,0 +1,264 @@
+{
+  "checks": {
+    "cargo fmt --all -- --check": "exit 0",
+    "cargo test -p runtime-sqlite --lib --no-run": "exit 0",
+    "cargo test -p runtime-sqlite --lib anchored_guest_": "exit 0, 2 passed, 0 failed",
+    "git diff --check": "exit 0",
+    "git status --short --branch": "clean codex/m3-wal-geometry-1117"
+  },
+  "inputs": {
+    "controller": {
+      "bytes": 59621,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m3-qemu11-wal-partial-1117-v6.py",
+      "sha256": "449ef14ca574b9c70caab77b6fa7b4e033472c8d9a8621b18d4873a70ff9a9ba"
+    },
+    "elf": {
+      "bytes": 51314200,
+      "path": "/home/yu/.codex/worktrees/m3-retry-current/sunrise-edge/target/debug/deps/runtime_sqlite-c358f940b1f1cb01",
+      "sha256": "bc5bce0b8d3cfaf9435e5629ff0401b3038f15c6adb8a514fe8c12cdf73f42ac"
+    },
+    "guestKernel": {
+      "bytes": 19016040,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1017a/kernel",
+      "sha256": "5806981b246bfd6e0b9f8dd0ee5e5d2e35561aca66bdf8377f190c8abcc4b2cc"
+    },
+    "qemuBinary": {
+      "bytes": 28948824,
+      "path": "/usr/bin/qemu-system-x86_64",
+      "sha256": "c43e631d642ba63a5af8f02a555fc679c30d38bdda8d4cd08897c3ca1dfa233a"
+    }
+  },
+  "launch": {
+    "actualExitCode": 0,
+    "attempt": "qga1117f",
+    "scopeUnit": "m3wal-1117f.scope",
+    "shellCommand": "timeout --signal=TERM --kill-after=10s 1330s systemd-run --user --scope --collect --unit=m3wal-1117f --property=MemoryMax=1073741824 --property=MemorySwapMax=0 --property=CPUQuota=100% --property=TasksMax=128 /usr/bin/python3 /home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m3-qemu11-wal-partial-1117-v6.py --elf /home/yu/.codex/worktrees/m3-retry-current/sunrise-edge/target/debug/deps/runtime_sqlite-c358f940b1f1cb01 --elf-sha256 bc5bce0b8d3cfaf9435e5629ff0401b3038f15c6adb8a514fe8c12cdf73f42ac --attempt qga1117f"
+  },
+  "priorDiagnostics": {
+    "failed": {
+      "qga1117a": {
+        "passed": false,
+        "raw": {
+          "bytes": 9925,
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/raw.log",
+          "sha256": "e9130b1d16273aff33235d7e6cef032b08db080ac2cff4e495e56887c90e7b23"
+        },
+        "terminal": {
+          "bytes": 60027,
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/terminal.json",
+          "sha256": "e2b122b62f189b003fd38a2acb71b3448af250cef177298f90990cb6c26185f5"
+        }
+      },
+      "qga1117b": {
+        "passed": false,
+        "raw": {
+          "bytes": 9875,
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/raw.log",
+          "sha256": "5cc6512d4714c8352f7b9f5ef73804fd2d2041522243d17b27aa63ab711a2ebe"
+        },
+        "terminal": {
+          "bytes": 63128,
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/terminal.json",
+          "sha256": "81d20ec9bc031e716023563ee0b0531400b47ebacfdf43fd32fd09696dbdb0d5"
+        }
+      },
+      "qga1117c": {
+        "passed": false,
+        "raw": {
+          "bytes": 9741,
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/raw.log",
+          "sha256": "e4197f25276b21c0bdccdab329510fe1bf189c49259944767b95c875e12ee77a"
+        },
+        "terminal": {
+          "bytes": 66194,
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/terminal.json",
+          "sha256": "67cc777c6f473e97c6d124b343fbd6e1d72ad83c36c26f073ef5560cb3f1ff44"
+        }
+      },
+      "qga1117d": {
+        "passed": false,
+        "raw": {
+          "bytes": 9775,
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/raw.log",
+          "sha256": "2ea0a0ed6dcc5e6823015d627cc760f594de68fcd584bab2ed4292e726e7bd70"
+        },
+        "terminal": {
+          "bytes": 69267,
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/terminal.json",
+          "sha256": "11468ab4bf2f76cb785fd437655c50aa1275fd806cb82a13846ef5e298086695"
+        }
+      }
+    },
+    "noFaultGeometry": {
+      "raw": {
+        "bytes": 18251,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/raw.log",
+        "sha256": "68ba9413cf8c91d5153f061bb6863aecd35b4c282f2651f5cb1ab5bc4f63d821"
+      },
+      "root": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e",
+      "terminal": {
+        "bytes": 95548,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/terminal.json",
+        "sha256": "dd7bdc1f004669de60b3483fc04e2aeb34efabdfe19d6ab4929fc8205f0bbfad"
+      },
+      "trace": {
+        "bytes": 24220,
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/ack-fault.trace",
+        "sha256": "9be92eeb6566740126b0d10079f8f91f98a51c9db3cc65affb340d48db84fd86"
+      }
+    }
+  },
+  "resources": {
+    "allOwnedChildrenReaped": true,
+    "cgroupAfterCleanup": {
+      "cgroup.procs": "3451733",
+      "memory.current": "167141376",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+      "memory.peak": "352800768",
+      "memory.swap.current": "0"
+    },
+    "cleanupOutputComplete": true,
+    "generatedBytes": 237144063,
+    "grossLogicalIoBytes": 851491832,
+    "memoryPeakBytes": 352800768,
+    "ownedHostMountsAbsent": true
+  },
+  "result": {
+    "actualColdSourceIdentity": {
+      "bytes": 67108864,
+      "device": 66314,
+      "inode": 11195941,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-recover-source.raw"
+    },
+    "blockIoErrors": [
+      {
+        "data": {
+          "action": "report",
+          "device": "",
+          "node-name": "source-data",
+          "operation": "write",
+          "qom-path": "/machine/peripheral/source/virtio-backend",
+          "reason": "Input/output error"
+        },
+        "event": "BLOCK_IO_ERROR",
+        "timestamp": {
+          "microseconds": 734775,
+          "seconds": 1794847271
+        }
+      }
+    ],
+    "coldFailstop": true,
+    "coldOracle": "initial=none tables=12+2 authority=2 collections=4 bodies=2 fence=1 pending=2 repeated=3",
+    "durableWal": {
+      "first4096Changed": true,
+      "first4096Sha256": "547ac57503f1d6a1a71286c8db4354670a53da25e6db05aa683c1ddaae0fc844",
+      "rawReadOnlyAfterGuestReaped": true,
+      "second4096Sha256": "f6fb44823615474b46c5d552a43ec4610a85a1122383ed07da630b1c78942159",
+      "secondOldPrefixSha256": "a07726bb16aa80c2f3f02453c82bdc0a5cabce147536152c37af8aebadf1c198",
+      "secondOldPrefixUnchanged": true
+    },
+    "guestFilefrag": "Filesystem type is: ef53\nFile size of /data/sunrise-native-ownership-6e274de31b10d85698f8766317648510/state.db-wal is 4152 (2 blocks of 4096 bytes)\n ext:     logical_offset:        physical_offset: length:   expected: flags:\n   0:        0..       1:      15388..     15389:      2:             last,eof\n/data/sunrise-native-ownership-6e274de31b10d85698f8766317648510/state.db-wal: 1 extent found\n",
+    "mapping": {
+      "firstImageOffset": 64077824,
+      "oldSecondPrefixBytes": 56,
+      "partition": {
+        "byteOffset": 1048576,
+        "sectorCount512": 129024,
+        "start512Sector": 2048
+      },
+      "physicalExt4Blocks": [
+        15388,
+        15389
+      ],
+      "secondImageOffset": 64081920,
+      "secondSector512": 125160,
+      "walBytes": 4152
+    },
+    "originalAuthorityIdentity": {
+      "bytes": 33554432,
+      "device": 66314,
+      "inode": 11195949,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw"
+    },
+    "passed": true,
+    "postarmLowerSecond4096Absent": true,
+    "postarmSecond4096TraceLines": [
+      "bdrv_co_pwritev_part bs 0x5607b1123fa0 offset 64081920 bytes 4096 flags 0x8"
+    ],
+    "prearmSourceFileTracePointer": "0x5607b10dd3f0",
+    "preimageBlockSha256": [
+      "eb277f28262d2df82ac00141c7127f5b8dfa4a360dd24c7fe2da2e91479d6aab",
+      "a07726bb16aa80c2f3f02453c82bdc0a5cabce147536152c37af8aebadf1c198"
+    ],
+    "qmpRule": {
+      "errno": 5,
+      "event": "none",
+      "immediately": false,
+      "iotype": "write",
+      "once": true,
+      "sector": 125160
+    },
+    "seconds": 10.114559193025343,
+    "selectedDevice": "source",
+    "sqliteExtendedCommitError": 1034,
+    "walStat": "is_file=true size=4152 device=64769 inode=18",
+    "walWarmup": "busy=0 frames=1 checkpointed=1"
+  },
+  "retained": {
+    "coldSourceCopy": {
+      "bytes": 67108864,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-recover-source.raw",
+      "sha256": "2d8941d49aa9c32a3fdac3949934487f0a0ec8a34d6c623f1430859b88b34071"
+    },
+    "neverAttachedAuthorityCopy": {
+      "bytes": 33554432,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/forensic/source-write-authority.never-attach",
+      "sha256": "9fd371515a6e878b5ba8587342f6b18253d494a4c84d8065c2e779c0127f013d"
+    },
+    "originalAuthority": {
+      "bytes": 33554432,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw",
+      "sha256": "bda70104f2ebbbafae39f7190adeafd4e46901e20ef5f3c29100e8dce6c616d0"
+    },
+    "originalFaultSource": {
+      "bytes": 67108864,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw",
+      "sha256": "ebae1fac61c73b711fac712521dc0faffb9ddda5425959a6991f9c66083f60c2"
+    },
+    "raw": {
+      "bytes": 27475,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/raw.log",
+      "sha256": "3facf5cd20d6360b10fd9e1791863fd063ba0f5aced47707b740eac650999c34"
+    },
+    "root": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f",
+    "terminal": {
+      "bytes": 114937,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/terminal.json",
+      "sha256": "36fe04281b292081f5f16d11a0c06ee40a16c50a4dd870216936f825d5c06aef"
+    },
+    "trace": {
+      "bytes": 25278,
+      "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-fault.trace",
+      "sha256": "d54094b8d43f5a9252d8267b6e9739de9e6737f834329e3991f4a902ccbc98d2"
+    }
+  },
+  "scope": "M3 selected virtual SQLite WAL partial persistent source-write evidence; test-only local source/profile; no physical-host/failover or entire M3 parent claim",
+  "source": {
+    "basePR383Commit": "ef6e066d67091626067f3b656232efd3f3177422",
+    "branch": "codex/m3-wal-geometry-1117",
+    "commit": "cc599a0492d84ec22d3b1ef83bb834716c07ec0d",
+    "testOnlyFile": {
+      "bytes": 34053,
+      "path": "/home/yu/.codex/worktrees/m3-retry-current/sunrise-edge/crates/runtime-sqlite/src/structured/ownership_tests/blob_crash/guest_fault/anchored.rs",
+      "sha256": "0e860a4968c73f5950f46b2cebefd9911241e2c73082fc99858adfe39dcff067"
+    },
+    "tree": "89b00480b2a25b2c106e6f691fda540e09cce4b1",
+    "worktree": "/home/yu/.codex/worktrees/m3-retry-current/sunrise-edge"
+  },
+  "unrun": [
+    "all nine fault cases on this test-only source",
+    "local complete check-all profile",
+    "hosted CI",
+    "physical host/power/media/fsync and separate-host writer failover"
+  ]
+}

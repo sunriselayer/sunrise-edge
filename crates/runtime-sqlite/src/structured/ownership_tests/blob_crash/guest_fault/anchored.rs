@@ -234,6 +234,124 @@ fn event(proof: &Proof, name: &str, detail: &str) {
     );
     std::io::stdout().flush().unwrap();
 }
+// Diagnostic-only: observe the real SQLite-owned WAL before its source COMMIT.
+// The controller keeps this separate from the selected nine-case owner.
+fn wal_geometry(proof: &Proof, state: &Path) {
+    let mut wal = state.as_os_str().to_owned();
+    wal.push("-wal");
+    let wal = PathBuf::from(wal);
+    let before = fs::metadata(&wal).unwrap();
+    event(
+        proof,
+        "wal-stat",
+        &format!(
+            "is_file={} size={} device={} inode={}",
+            before.is_file(),
+            before.len(),
+            before.dev(),
+            before.ino()
+        ),
+    );
+    assert!(before.is_file() && before.len() > 0 && before.len() <= 1024 * 1024);
+    let mapping = std::process::Command::new("/bin/filefrag")
+        .arg("-v")
+        .arg("-s")
+        .arg(&wal)
+        .output()
+        .unwrap();
+    assert!(mapping.status.success());
+    assert!(mapping.stdout.len() <= 16 * 1024 && mapping.stderr.len() <= 1024);
+    let contents = fs::read(&wal).unwrap();
+    assert_eq!(contents.len() as u64, before.len());
+    let recheck = std::process::Command::new("/bin/filefrag")
+        .arg("-v")
+        .arg("-s")
+        .arg(&wal)
+        .output()
+        .unwrap();
+    assert!(recheck.status.success() && recheck.stdout == mapping.stdout);
+    let after = fs::metadata(&wal).unwrap();
+    assert_eq!(
+        (after.dev(), after.ino(), after.len()),
+        (before.dev(), before.ino(), before.len())
+    );
+    let start = bounded_file("/sys/class/block/vda1/start", 64);
+    let sector = bounded_file("/sys/class/block/vda/queue/logical_block_size", 64);
+    let block_hashes = contents
+        .chunks(4096)
+        .map(|block| hex(&Sha256::digest(block)))
+        .collect::<Vec<_>>()
+        .join(",");
+    event(
+        proof,
+        "wal-geometry",
+        &format!(
+            "size={} partition_start={} logical_sector={} filefrag_hex={} block4096_sha256={}",
+            contents.len(),
+            String::from_utf8(start).unwrap().trim(),
+            String::from_utf8(sector).unwrap().trim(),
+            hex(&mapping.stdout),
+            block_hashes
+        ),
+    );
+}
+fn warmup_wal(proof: &Proof, state: &Path) {
+    // This connection writes the same logical row value and performs a complete
+    // SQLite-owned RESTART checkpoint while the anchored store remains open.
+    let mut connection = rusqlite::Connection::open(state).unwrap();
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .unwrap();
+    let journal: String = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal.to_ascii_lowercase(), "wal");
+    let transaction = connection.transaction().unwrap();
+    let original_sequence: Vec<u8> = transaction
+        .query_row(
+            "SELECT mutation_sequence FROM durable_metadata WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let temporary_sequence: [u8; 8] = runtime_sql_durable::schema::encode_u64(
+        runtime_sql_durable::schema::decode_u64(&original_sequence)
+            .unwrap()
+            .checked_add(1)
+            .unwrap(),
+    );
+    assert_eq!(
+        transaction
+            .execute(
+                "UPDATE durable_metadata SET mutation_sequence=?1 WHERE id=1 AND mutation_sequence=?2",
+                rusqlite::params![&temporary_sequence[..], &original_sequence],
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        transaction
+            .execute(
+                "UPDATE durable_metadata SET mutation_sequence=?1 WHERE id=1 AND mutation_sequence=?2",
+                rusqlite::params![&original_sequence, &temporary_sequence[..]],
+            )
+            .unwrap(),
+        1
+    );
+    transaction.commit().unwrap();
+    let (busy, frames, checkpointed): (i64, i64, i64) = connection
+        .query_row("PRAGMA wal_checkpoint(RESTART)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap();
+    event(
+        proof,
+        "wal-warmup",
+        &format!("busy={busy} frames={frames} checkpointed={checkpointed}"),
+    );
+    assert_eq!(busy, 0);
+    assert!(frames > 0 && frames == checkpointed);
+}
 fn anchored_baseline(source: [u8; 16]) -> RawImage {
     let mut image: RawImage = baseline(source);
     image.state.get_mut("durable_metadata").unwrap()[0][1] =
@@ -448,6 +566,16 @@ fn fault(proof: &Proof, state: &Path, blobs_path: &Path, anchor: &Path) {
     let store: SqliteDurableStore =
         SqliteDurableStore::open_anchored(state, blobs_path, anchor, namespace()).unwrap();
     let blobs: SqliteBlobStore = SqliteBlobStore::open_existing_writable(blobs_path).unwrap();
+    if ["ack", "source-write"].contains(&proof.case.as_str())
+        && std::env::var("SUNRISE_WAL_GEOMETRY_PROBE").as_deref() == Ok("1")
+    {
+        let before_source: RawImage = guest_raw(state, blobs_path);
+        let before_authority: Tables = authority_rows(anchor);
+        warmup_wal(proof, state);
+        assert!(guest_raw(state, blobs_path) == before_source);
+        assert_eq!(authority_rows(anchor), before_authority);
+        assert_eq!(Identity::observe(anchor), identity);
+    }
     let target: KnownObject = known_object(true);
     blobs.put_blob(target.digest, target.bytes.clone()).unwrap();
     let (none, all): (RawImage, RawImage) = candidates(source);
@@ -459,9 +587,23 @@ fn fault(proof: &Proof, state: &Path, blobs_path: &Path, anchor: &Path) {
         &format!("source={} authority={}", hex(&source), identity.text()),
     );
     match proof.case.as_str() {
-        "ack" => {}
+        "ack" => {
+            if std::env::var("SUNRISE_WAL_GEOMETRY_PROBE").as_deref() == Ok("1") {
+                let owned = proof.clone();
+                let wal_state = state.to_owned();
+                store
+                    .engine
+                    .backend()
+                    .on_commit(CommitBoundary::BeforeDispatch, move || {
+                        wal_geometry(&owned, &wal_state);
+                        release(&owned);
+                        Ok(())
+                    });
+            }
+        }
         "prepared" | "source-write" | "source-flush" => {
             let owned: Proof = proof.clone();
+            let wal_state = state.to_owned();
             store
                 .engine
                 .backend()
@@ -475,6 +617,11 @@ fn fault(proof: &Proof, state: &Path, blobs_path: &Path, anchor: &Path) {
                         },
                         "",
                     );
+                    if owned.case == "source-write"
+                        && std::env::var("SUNRISE_WAL_GEOMETRY_PROBE").as_deref() == Ok("1")
+                    {
+                        wal_geometry(&owned, &wal_state);
+                    }
                     release(&owned);
                     assert_ne!(owned.case, "prepared", "power cut must not release");
                     Ok(())

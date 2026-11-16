@@ -138,3 +138,14 @@ preserves the previous QEMU 10.2.2 host attempt separately. Reselecting this
 local host does not change the nine DR-0266 cuts or cold oracle.
 Execution/completion is recorded in TODO, never inferred from source or QMP
 configuration. Neither variant alone demonstrates torn persistent WAL writes.
+
+A separate opt-in anchored guest diagnostic keeps the same source/authority
+oracle and prepares one SQLite-owned reusable WAL frame with a complete
+`RESTART` checkpoint. At source COMMIT it reads the live WAL FIEMAP and actual
+partition geometry, then the bounded external owner targets the second block
+of a split virtual write. The owner checks QMP graph and lower-node trace,
+compares detached original-source WAL bytes before cold boot, and uses the
+original authority for receipt-first recovery. The [exact local result](../development/validation/2026-11-17-m3-wal-partial/README.md)
+is a partial persistent WAL observation on the selected virtual device; it
+does not extend the nine-case qualification to physical media or cross-host
+writer failover.
