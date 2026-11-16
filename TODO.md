@@ -29,7 +29,7 @@
   - [x] **N1 readiness: 現行sourceの別UID実行結果**: commit `6801bca3`で既存readiness ownerの別UID worker/frontend profileが1 passed/0 failed。raw結果・実行元tree・資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md)に固定。後続の文書commitやM2親の資格へ転用しない。
   - [x] **N2 successor: 現行sourceの別UID実行結果**: commit `abccadfd`の既存recurring ownerが、元の7 epochs/e8・2件の1832-byte候補/committed ACKを保持して1 passed/0 failed。別UID、raw結果、11 artifact不変と資源解放は[検証記録](docs/development/validation/2026-11-12-m2-current-source-uid/README.md#n2-successor-passed-2026-11-13)に固定。後続sourceやM2/M7親の資格へ転用しない。
   - [x] **original bond: 実SQLite hostと保護署名の結合検証**: `b2087f0d`から修正した`3b05f2d2`の既存ownerで、同一genesis/Coinの実host観測から別承認・署名へ接続し、停止後の古いfenceを拒否。standaloneとnode-core handoffは各1 passed/0 failed。後者のpost-genesis Coin currentnessは既存固定応答のまま。失敗・成功rawと範囲は[限定検証記録](docs/development/validation/2026-11-12-m2-bond-realhost/README.md)。最終PR headの全体gateや実鍵資格へ転用しない。
-  - [ ] **ZeroShare専用custody WIP**: 別branchのcompile/wire修正 `4fd072f3` でCLI lib 386 passed/5 ignoredとClippyは成功。別UID Docker fixtureと現行mainへの統合、完全gate/CIは未達で、実装済み・検証済みとは数えない。2026-11-16に利用者の指示でfixture作業を再開した。
+  - [ ] **ZeroShare専用custody WIP**: 別branchの未検証コードは未統合。fixture作成は提供側の安全判定で停止しており、再試行・迂回しない。実装済み・検証済みとは数えない。
   - 現行のN1〜N5区分は[下の表](#m2初期リリース対象の照合-2026-11-03)にまとめる。
 
 - [ ] **M3: selected SQLite profileのdurabilityを検証する**
@@ -95,7 +95,7 @@
 
 ## 作業境界
 
-利用者は2026-11-16に停止済み監査・障害検証・ZeroShare fixtureの再試行を指示した。再試行では新たな提供側の安全拒否を迂回せず、未実行・部分結果を合格に転用しない。実鍵・host user・security policy・deploy・公開設定はこのTODO整理では変更しない。未選択のTypeScript client、explorer/wallet、Ledger、Unique Asset、multisig、contract upgrade/irreversible relinquishment/atomic migration、ZK、cross-domain atomicity、追加provider/HA/scaleは広告しない。必要になった時は元の条件を参照する。
+利用者は2026-11-16に停止済み監査・障害検証の再試行を指示した。ZeroShare fixtureの再試行はPR #381で追う。再試行では新たな提供側の安全拒否を迂回せず、未実行・部分結果を合格に転用しない。実鍵・host user・security policy・deploy・公開設定はこのTODO整理では変更しない。未選択のTypeScript client、explorer/wallet、Ledger、Unique Asset、multisig、contract upgrade/irreversible relinquishment/atomic migration、ZK、cross-domain atomicity、追加provider/HA/scaleは広告しない。必要になった時は元の条件を参照する。
 
 [historical-todo]: https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/TODO.md
 [historical-m2]: https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/TODO.md#m2初期リリース対象の照合-2026-11-03
