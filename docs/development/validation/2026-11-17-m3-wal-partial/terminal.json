@@ -1,0 +1,3547 @@
+{
+  "scope": "One real SQLite WAL sector-targeted partial persistent source-write attempt plus original-authority cold oracle on selected QEMU11/Arch pins; no broader M3 acceptance claim",
+  "attempts": [
+    {
+      "case": "source-write",
+      "nonce": "6e274de31b10d85698f8766317648510",
+      "state": "completed",
+      "fault": {
+        "case": "source-write",
+        "nonce": "6e274de31b10d85698f8766317648510",
+        "source": "94b18993714bc7d4abccb274895cbf4d",
+        "authorityIdentity": "64785:15:64785:14",
+        "initialGraph": {
+          "graph": {
+            "edges": [
+              {
+                "name": "file",
+                "parent": 4,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 6
+              },
+              {
+                "name": "file",
+                "parent": 2,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 5
+              },
+              {
+                "name": "root",
+                "parent": 3,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 4
+              },
+              {
+                "name": "root",
+                "parent": 1,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 2
+              }
+            ],
+            "nodes": [
+              {
+                "name": "authority-data",
+                "type": "block-driver",
+                "id": 4
+              },
+              {
+                "name": "authority-file",
+                "type": "block-driver",
+                "id": 6
+              },
+              {
+                "name": "source-data",
+                "type": "block-driver",
+                "id": 2
+              },
+              {
+                "name": "source-file",
+                "type": "block-driver",
+                "id": 5
+              },
+              {
+                "name": "/machine/peripheral/authority/virtio-backend",
+                "type": "block-backend",
+                "id": 3
+              },
+              {
+                "name": "/machine/peripheral/source/virtio-backend",
+                "type": "block-backend",
+                "id": 1
+              }
+            ]
+          },
+          "namedNodes": [
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 1,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 33554432,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw",
+                "format": "raw",
+                "actual-size": 4456448,
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [
+                {
+                  "node-name": "authority-file",
+                  "child": "file"
+                }
+              ],
+              "node-name": "authority-data",
+              "backing_file_depth": 0,
+              "drv": "raw",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 512,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 33554432,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw",
+                "format": "file",
+                "actual-size": 4456448,
+                "format-specific": {
+                  "type": "file",
+                  "data": {}
+                },
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [],
+              "node-name": "authority-file",
+              "backing_file_depth": 0,
+              "drv": "file",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 1,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 67108864,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw",
+                "format": "raw",
+                "actual-size": 4472832,
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [
+                {
+                  "node-name": "source-file",
+                  "child": "file"
+                }
+              ],
+              "node-name": "source-data",
+              "backing_file_depth": 0,
+              "drv": "raw",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 512,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 67108864,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw",
+                "format": "file",
+                "actual-size": 4472832,
+                "format-specific": {
+                  "type": "file",
+                  "data": {}
+                },
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [],
+              "node-name": "source-file",
+              "backing_file_depth": 0,
+              "drv": "file",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw"
+            }
+          ],
+          "actualCacheByNode": {
+            "authority-data": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "authority-file": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "source-data": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "source-file": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            }
+          }
+        },
+        "walWarmup": "busy=0 frames=1 checkpointed=1",
+        "walStat": "is_file=true size=4152 device=64769 inode=18",
+        "walGeometry": "size=4152 partition_start=2048 logical_sector=512 filefrag_hex=46696c6573797374656d20747970652069733a20656635330a46696c652073697a65206f66202f646174612f73756e726973652d6e61746976652d6f776e6572736869702d36653237346465333162313064383536393866383736363331373634383531302f73746174652e64622d77616c206973203431353220283220626c6f636b73206f662034303936206279746573290a206578743a20202020206c6f676963616c5f6f66667365743a2020202020202020706879736963616c5f6f66667365743a206c656e6774683a20202065787065637465643a20666c6167733a0a202020303a2020202020202020302e2e20202020202020313a20202020202031353338382e2e202020202031353338393a202020202020323a202020202020202020202020206c6173742c656f660a2f646174612f73756e726973652d6e61746976652d6f776e6572736869702d36653237346465333162313064383536393866383736363331373634383531302f73746174652e64622d77616c3a203120657874656e7420666f756e640a block4096_sha256=eb277f28262d2df82ac00141c7127f5b8dfa4a360dd24c7fe2da2e91479d6aab,a07726bb16aa80c2f3f02453c82bdc0a5cabce147536152c37af8aebadf1c198",
+        "walTarget": {
+          "walBytes": 4152,
+          "guestFilefrag": "Filesystem type is: ef53\nFile size of /data/sunrise-native-ownership-6e274de31b10d85698f8766317648510/state.db-wal is 4152 (2 blocks of 4096 bytes)\n ext:     logical_offset:        physical_offset: length:   expected: flags:\n   0:        0..       1:      15388..     15389:      2:             last,eof\n/data/sunrise-native-ownership-6e274de31b10d85698f8766317648510/state.db-wal: 1 extent found\n",
+          "physicalExt4Blocks": [
+            15388,
+            15389
+          ],
+          "firstImageOffset": 64077824,
+          "secondImageOffset": 64081920,
+          "secondSector512": 125160,
+          "oldBlockSha256": [
+            "eb277f28262d2df82ac00141c7127f5b8dfa4a360dd24c7fe2da2e91479d6aab",
+            "a07726bb16aa80c2f3f02453c82bdc0a5cabce147536152c37af8aebadf1c198"
+          ],
+          "oldSecondPrefixBytes": 56,
+          "partition": {
+            "start512Sector": 2048,
+            "sectorCount512": 129024,
+            "byteOffset": 1048576
+          }
+        },
+        "prearmSourceFileTracePointer": "0x5607b10dd3f0",
+        "armedGraph": {
+          "graph": {
+            "edges": [
+              {
+                "name": "image",
+                "parent": 6,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 5
+              },
+              {
+                "name": "file",
+                "parent": 4,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 7
+              },
+              {
+                "name": "file",
+                "parent": 2,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 6
+              },
+              {
+                "name": "root",
+                "parent": 3,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 4
+              },
+              {
+                "name": "root",
+                "parent": 1,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 2
+              }
+            ],
+            "nodes": [
+              {
+                "name": "fault-debug",
+                "type": "block-driver",
+                "id": 6
+              },
+              {
+                "name": "authority-data",
+                "type": "block-driver",
+                "id": 4
+              },
+              {
+                "name": "authority-file",
+                "type": "block-driver",
+                "id": 7
+              },
+              {
+                "name": "source-data",
+                "type": "block-driver",
+                "id": 2
+              },
+              {
+                "name": "source-file",
+                "type": "block-driver",
+                "id": 5
+              },
+              {
+                "name": "/machine/peripheral/authority/virtio-backend",
+                "type": "block-backend",
+                "id": 3
+              },
+              {
+                "name": "/machine/peripheral/source/virtio-backend",
+                "type": "block-backend",
+                "id": 1
+              }
+            ]
+          },
+          "namedNodes": [
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "backing-image": {
+                  "limits": {
+                    "request-alignment": 512,
+                    "min-mem-alignment": 4,
+                    "opt-mem-alignment": 4096,
+                    "max-iov": 1024
+                  },
+                  "virtual-size": 67108864,
+                  "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw",
+                  "format": "file",
+                  "actual-size": 4825088,
+                  "format-specific": {
+                    "type": "file",
+                    "data": {}
+                  },
+                  "dirty-flag": false
+                },
+                "limits": {
+                  "request-alignment": 4096,
+                  "min-mem-alignment": 4,
+                  "max-transfer": 4096,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 67108864,
+                "filename": "json:{\"inject-error.0.immediately\": false, \"inject-error.0.once\": true, \"image\": {\"driver\": \"file\", \"filename\": \"/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw\"}, \"max-transfer\": 4096, \"driver\": \"blkdebug\", \"inject-error.0.iotype\": \"write\", \"inject-error.0.event\": \"none\", \"inject-error.0.errno\": 5, \"inject-error.0.sector\": 125160, \"align\": 4096}",
+                "format": "blkdebug",
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [
+                {
+                  "node-name": "source-file",
+                  "child": "image"
+                }
+              ],
+              "node-name": "fault-debug",
+              "backing_file_depth": 1,
+              "drv": "blkdebug",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "json:{\"inject-error.0.immediately\": false, \"inject-error.0.once\": true, \"image\": {\"driver\": \"file\", \"filename\": \"/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw\"}, \"max-transfer\": 4096, \"driver\": \"blkdebug\", \"inject-error.0.iotype\": \"write\", \"inject-error.0.event\": \"none\", \"inject-error.0.errno\": 5, \"inject-error.0.sector\": 125160, \"align\": 4096}"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 1,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 33554432,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw",
+                "format": "raw",
+                "actual-size": 4521984,
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [
+                {
+                  "node-name": "authority-file",
+                  "child": "file"
+                }
+              ],
+              "node-name": "authority-data",
+              "backing_file_depth": 0,
+              "drv": "raw",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 512,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 33554432,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw",
+                "format": "file",
+                "actual-size": 4521984,
+                "format-specific": {
+                  "type": "file",
+                  "data": {}
+                },
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [],
+              "node-name": "authority-file",
+              "backing_file_depth": 0,
+              "drv": "file",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 1,
+                  "min-mem-alignment": 4,
+                  "max-transfer": 4096,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 67108864,
+                "filename": "json:{\"driver\": \"raw\", \"file\": {\"inject-error.0.immediately\": false, \"inject-error.0.once\": true, \"image\": {\"driver\": \"file\", \"filename\": \"/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw\"}, \"max-transfer\": 4096, \"driver\": \"blkdebug\", \"inject-error.0.iotype\": \"write\", \"inject-error.0.event\": \"none\", \"inject-error.0.errno\": 5, \"inject-error.0.sector\": 125160, \"align\": 4096}}",
+                "format": "raw",
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [
+                {
+                  "node-name": "fault-debug",
+                  "child": "file"
+                }
+              ],
+              "node-name": "source-data",
+              "backing_file_depth": 0,
+              "drv": "raw",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "json:{\"driver\": \"raw\", \"file\": {\"inject-error.0.immediately\": false, \"inject-error.0.once\": true, \"image\": {\"driver\": \"file\", \"filename\": \"/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw\"}, \"max-transfer\": 4096, \"driver\": \"blkdebug\", \"inject-error.0.iotype\": \"write\", \"inject-error.0.event\": \"none\", \"inject-error.0.errno\": 5, \"inject-error.0.sector\": 125160, \"align\": 4096}}"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 512,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 67108864,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw",
+                "format": "file",
+                "actual-size": 4825088,
+                "format-specific": {
+                  "type": "file",
+                  "data": {}
+                },
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [],
+              "node-name": "source-file",
+              "backing_file_depth": 0,
+              "drv": "file",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw"
+            }
+          ],
+          "actualCacheByNode": {
+            "fault-debug": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "authority-data": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "authority-file": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "source-data": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "source-file": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            }
+          }
+        },
+        "armedRule": {
+          "event": "none",
+          "iotype": "write",
+          "errno": 5,
+          "sector": 125160,
+          "once": true,
+          "immediately": false
+        },
+        "selectedDeviceRole": "source",
+        "prearmTraceBytes": 22854,
+        "sqliteExtendedCommitError": 1034,
+        "blockIoErrors": [
+          {
+            "timestamp": {
+              "seconds": 1794847271,
+              "microseconds": 734775
+            },
+            "event": "BLOCK_IO_ERROR",
+            "data": {
+              "device": "",
+              "node-name": "source-data",
+              "qom-path": "/machine/peripheral/source/virtio-backend",
+              "reason": "Input/output error",
+              "operation": "write",
+              "action": "report"
+            }
+          }
+        ],
+        "termination": {
+          "qemuExit": -9,
+          "stdoutEof": true,
+          "waitCompleted": true,
+          "pidAbsent": true,
+          "qmpSocketAbsent": true,
+          "seconds": 1.501576961018145,
+          "io": {
+            "rchar": 19736684,
+            "wchar": 1868763,
+            "syscr": 1961,
+            "syscw": 5303,
+            "read_bytes": 389120,
+            "write_bytes": 1851392,
+            "cancelled_write_bytes": 0
+          },
+          "socketCleanup": {
+            "absent": true,
+            "ownedIdentity": [
+              66314,
+              11195953,
+              49152,
+              1000,
+              1
+            ],
+            "firstCapturedDuringCleanup": false
+          }
+        },
+        "durableWal": {
+          "first4096Sha256": "547ac57503f1d6a1a71286c8db4354670a53da25e6db05aa683c1ddaae0fc844",
+          "secondOldPrefixSha256": "a07726bb16aa80c2f3f02453c82bdc0a5cabce147536152c37af8aebadf1c198",
+          "second4096Sha256": "f6fb44823615474b46c5d552a43ec4610a85a1122383ed07da630b1c78942159",
+          "first4096Changed": true,
+          "secondOldPrefixUnchanged": true,
+          "rawReadOnlyAfterGuestReaped": true
+        },
+        "writeTrace": {
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-fault.trace",
+          "bytes": 25278,
+          "sha256": "d54094b8d43f5a9252d8267b6e9739de9e6737f834329e3991f4a902ccbc98d2",
+          "prearmBytes": 22854,
+          "postarmSplitObserved": true
+        },
+        "authorityForensic": {
+          "role": "untrusted-never-attached-evidence",
+          "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/forensic/source-write-authority.never-attach",
+          "sha256": "9fd371515a6e878b5ba8587342f6b18253d494a4c84d8065c2e779c0127f013d",
+          "identity": {
+            "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/forensic/source-write-authority.never-attach",
+            "bytes": 33554432,
+            "device": 66314,
+            "inode": 11195953
+          }
+        },
+        "immutableSourceImageSha256": "ebae1fac61c73b711fac712521dc0faffb9ddda5425959a6991f9c66083f60c2"
+      },
+      "recovery": {
+        "initialGraph": {
+          "graph": {
+            "edges": [
+              {
+                "name": "file",
+                "parent": 4,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 6
+              },
+              {
+                "name": "file",
+                "parent": 2,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 5
+              },
+              {
+                "name": "root",
+                "parent": 3,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 4
+              },
+              {
+                "name": "root",
+                "parent": 1,
+                "shared-perm": [
+                  "resize",
+                  "write-unchanged",
+                  "consistent-read"
+                ],
+                "perm": [
+                  "write",
+                  "consistent-read"
+                ],
+                "child": 2
+              }
+            ],
+            "nodes": [
+              {
+                "name": "authority-data",
+                "type": "block-driver",
+                "id": 4
+              },
+              {
+                "name": "authority-file",
+                "type": "block-driver",
+                "id": 6
+              },
+              {
+                "name": "source-data",
+                "type": "block-driver",
+                "id": 2
+              },
+              {
+                "name": "source-file",
+                "type": "block-driver",
+                "id": 5
+              },
+              {
+                "name": "/machine/peripheral/authority/virtio-backend",
+                "type": "block-backend",
+                "id": 3
+              },
+              {
+                "name": "/machine/peripheral/source/virtio-backend",
+                "type": "block-backend",
+                "id": 1
+              }
+            ]
+          },
+          "namedNodes": [
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 1,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 33554432,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw",
+                "format": "raw",
+                "actual-size": 4521984,
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [
+                {
+                  "node-name": "authority-file",
+                  "child": "file"
+                }
+              ],
+              "node-name": "authority-data",
+              "backing_file_depth": 0,
+              "drv": "raw",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 512,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 33554432,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw",
+                "format": "file",
+                "actual-size": 4521984,
+                "format-specific": {
+                  "type": "file",
+                  "data": {}
+                },
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [],
+              "node-name": "authority-file",
+              "backing_file_depth": 0,
+              "drv": "file",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 1,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 67108864,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-recover-source.raw",
+                "format": "raw",
+                "actual-size": 67108864,
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [
+                {
+                  "node-name": "source-file",
+                  "child": "file"
+                }
+              ],
+              "node-name": "source-data",
+              "backing_file_depth": 0,
+              "drv": "raw",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-recover-source.raw"
+            },
+            {
+              "iops_rd": 0,
+              "detect_zeroes": "off",
+              "active": true,
+              "image": {
+                "limits": {
+                  "request-alignment": 512,
+                  "min-mem-alignment": 4,
+                  "opt-mem-alignment": 4096,
+                  "max-iov": 1024
+                },
+                "virtual-size": 67108864,
+                "filename": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-recover-source.raw",
+                "format": "file",
+                "actual-size": 67108864,
+                "format-specific": {
+                  "type": "file",
+                  "data": {}
+                },
+                "dirty-flag": false
+              },
+              "iops_wr": 0,
+              "ro": false,
+              "children": [],
+              "node-name": "source-file",
+              "backing_file_depth": 0,
+              "drv": "file",
+              "iops": 0,
+              "bps_wr": 0,
+              "write_threshold": 0,
+              "encrypted": false,
+              "bps": 0,
+              "bps_rd": 0,
+              "cache": {
+                "no-flush": false,
+                "direct": true,
+                "writeback": true
+              },
+              "file": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-recover-source.raw"
+            }
+          ],
+          "actualCacheByNode": {
+            "authority-data": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "authority-file": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "source-data": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            },
+            "source-file": {
+              "no-flush": false,
+              "direct": true,
+              "writeback": true
+            }
+          }
+        },
+        "oracle": "initial=none tables=12+2 authority=2 collections=4 bodies=2 fence=1 pending=2 repeated=3",
+        "failstop": true,
+        "actualGuestTestExit": 0,
+        "termination": {
+          "qemuExit": -9,
+          "stdoutEof": true,
+          "waitCompleted": true,
+          "pidAbsent": true,
+          "qmpSocketAbsent": true,
+          "seconds": 1.1182809050078504,
+          "io": {
+            "rchar": 21177306,
+            "wchar": 157616,
+            "syscr": 799,
+            "syscw": 1461,
+            "read_bytes": 1765376,
+            "write_bytes": 151552,
+            "cancelled_write_bytes": 0
+          },
+          "socketCleanup": {
+            "absent": true,
+            "ownedIdentity": [
+              66314,
+              11195955,
+              49152,
+              1000,
+              1
+            ],
+            "firstCapturedDuringCleanup": false
+          }
+        }
+      },
+      "sourceImage": {
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-source.raw",
+        "bytes": 67108864,
+        "device": 66314,
+        "inode": 11195947
+      },
+      "actualColdSource": {
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-recover-source.raw",
+        "bytes": 67108864,
+        "device": 66314,
+        "inode": 11195941
+      },
+      "actualColdAuthorityOriginal": {
+        "path": "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117f/source-write-authority.raw",
+        "bytes": 33554432,
+        "device": 66314,
+        "inode": 11195949
+      }
+    }
+  ],
+  "passed": true,
+  "hostKernelRelease": "7.2.15-arch1-1",
+  "priorRetainedRoots": {
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/mkfs-preack.raw": [
+        66314,
+        8059228,
+        0,
+        1792201065680295521,
+        1794539535768633371
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/raw.log": [
+        66314,
+        8059236,
+        17832,
+        1792201068857100665,
+        1794539535843467711
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/ldd-1.raw": [
+        66314,
+        8059225,
+        448,
+        1792201062554163233,
+        1794539535768589444
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/mkfs-ack.raw": [
+        66314,
+        8059227,
+        0,
+        1792201063295143856,
+        1794539535768618985
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/initrd.gz": [
+        66314,
+        8059222,
+        6123352,
+        1792201063276367229,
+        1794539535745631685
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/terminal.json": [
+        66314,
+        8059237,
+        16946,
+        1792201068880034576,
+        1794539535843616031
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/ldd-2.raw": [
+        66314,
+        8059226,
+        252,
+        1792201062566163445,
+        1794539535768605060
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/ack.raw": [
+        66314,
+        8059221,
+        134217728,
+        1792201065632217619,
+        1794539535736992400
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/qemu-ack-fault.raw": [
+        66314,
+        8059231,
+        496,
+        1792201064535198236,
+        1794539535843368360
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/qemu-ack-recover.raw": [
+        66314,
+        8059232,
+        608,
+        1792201065637196038,
+        1794539535843386554
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/qemu-preack-fault.raw": [
+        66314,
+        8059233,
+        510,
+        1792201066690581111,
+        1794539535843405742
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/kernel": [
+        66314,
+        8059223,
+        19016040,
+        1792201063292514009,
+        1794539535768515401
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/qemu-preack-recover.raw": [
+        66314,
+        8059234,
+        614,
+        1792201067730573040,
+        1794539535843421243
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/mkfs-write.raw": [
+        66314,
+        8059229,
+        0,
+        1792201067769199072,
+        1794539535768649388
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/preack.raw": [
+        66314,
+        8059230,
+        134217728,
+        1792201067726254618,
+        1794539535843317632
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/write.raw": [
+        66314,
+        8059238,
+        134217728,
+        1792201068766272995,
+        1794539535913846488
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/ldd-0.raw": [
+        66314,
+        8059224,
+        200,
+        1792201062546163092,
+        1794539535768568265
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017a/qemu-write-fault.raw": [
+        66314,
+        8059235,
+        859,
+        1792201068857100665,
+        1794539535843437416
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/mkfs-preack.raw": [
+        66314,
+        8059249,
+        0,
+        1792201665222413982,
+        1794539536154143221
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/raw.log": [
+        66314,
+        8059260,
+        31009,
+        1792201672532670317,
+        1794539536223763718
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/qemu-write-recover.raw": [
+        66314,
+        8059259,
+        613,
+        1792201670032916857,
+        1794539536223301575
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/mkfs-flush.raw": [
+        66314,
+        8059248,
+        0,
+        1792201670052394080,
+        1794539536154122031
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/ldd-1.raw": [
+        66314,
+        8059245,
+        448,
+        1792201662214758608,
+        1794539536154077705
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/mkfs-ack.raw": [
+        66314,
+        8059247,
+        0,
+        1792201662925079623,
+        1794539536154107566
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/initrd.gz": [
+        66314,
+        8059242,
+        6124770,
+        1792201662906232726,
+        1794539536131850114
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/write-recover.raw": [
+        66314,
+        8059262,
+        134217728,
+        1792201670027896658,
+        1794539536290331957
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/flush.raw": [
+        66314,
+        8059241,
+        134217728,
+        1792201671182032125,
+        1794539536123489018
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/terminal.json": [
+        66314,
+        8059261,
+        31939,
+        1792201672618239176,
+        1794539536223815596
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/ldd-2.raw": [
+        66314,
+        8059246,
+        252,
+        1792201662226758820,
+        1794539536154093264
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/ack.raw": [
+        66314,
+        8059239,
+        134217728,
+        1792201665198811333,
+        1794539535982772827
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/qemu-ack-fault.raw": [
+        66314,
+        8059252,
+        496,
+        1792201664042152995,
+        1794539536223187982
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/qemu-ack-recover.raw": [
+        66314,
+        8059253,
+        608,
+        1792201665207537086,
+        1794539536223205815
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/qemu-flush-recover.raw": [
+        66314,
+        8059255,
+        613,
+        1792201672532670317,
+        1794539536223237693
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/qemu-preack-fault.raw": [
+        66314,
+        8059256,
+        510,
+        1792201666382047845,
+        1794539536223253301
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/kernel": [
+        66314,
+        8059243,
+        19016040,
+        1792201662922490335,
+        1794539536154012458
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/flush-recover.raw": [
+        66314,
+        8059240,
+        134217728,
+        1792201672524940778,
+        1794539536053287573
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/qemu-preack-recover.raw": [
+        66314,
+        8059257,
+        614,
+        1792201667509656099,
+        1794539536223269303
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/qemu-flush-fault.raw": [
+        66314,
+        8059254,
+        1075,
+        1792201671188360368,
+        1794539536223221715
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/mkfs-write.raw": [
+        66314,
+        8059250,
+        0,
+        1792201667555485870,
+        1794539536154157000
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/preack.raw": [
+        66314,
+        8059251,
+        134217728,
+        1792201667504852079,
+        1794539536223129424
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/write.raw": [
+        66314,
+        8059263,
+        134217728,
+        1792201668595871356,
+        1794539536356844442
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/ldd-0.raw": [
+        66314,
+        8059244,
+        200,
+        1792201662204758431,
+        1794539536154061289
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qg1017b/qemu-write-fault.raw": [
+        66314,
+        8059258,
+        827,
+        1792201668686186611,
+        1794539536223285578
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qemu1017p1": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qemu1017p1/raw.log": [
+        66314,
+        8059219,
+        10842,
+        1792199524815303220,
+        1794539535633566067
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qemu1017p1/disk.raw": [
+        66314,
+        8059216,
+        134217728,
+        1792199524808856419,
+        1794539535605120545
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qemu1017p1/initrd.gz": [
+        66314,
+        8059217,
+        3206668,
+        1792199522264768914,
+        1794539535610487438
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qemu1017p1/terminal.json": [
+        66314,
+        8059220,
+        13158,
+        1792199524926925488,
+        1794539535634330397
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qemu1017p1/kernel": [
+        66314,
+        8059218,
+        19016040,
+        1792199522281799452,
+        1794539535633504193
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qm1017a": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qm1017a/raw.log": [
+        66314,
+        8059277,
+        253944,
+        1792204426887891551,
+        1794539536447958888
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qm1017a/disk.raw": [
+        66314,
+        8059276,
+        8192,
+        1792204426748684218,
+        1794539536447703795
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qm1017a/terminal.json": [
+        66314,
+        8059278,
+        38618,
+        1792204426920159761,
+        1794539536450826213
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/ack-source.raw": [
+        66314,
+        10933343,
+        67108864,
+        1794840270390735986,
+        1794840270390735986
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/raw.log": [
+        66314,
+        10933337,
+        11189,
+        1794840271700789029,
+        1794840271700789029
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/ldd-1.raw": [
+        66314,
+        10933339,
+        429,
+        1794840263825487824,
+        1794840263825487824
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/initrd.gz": [
+        66314,
+        10933341,
+        16669138,
+        1794840270359508670,
+        1794840270359508670
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/terminal.json": [
+        66314,
+        10933348,
+        18813,
+        1794840271728488246,
+        1794840271728488246
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/ldd-2.raw": [
+        66314,
+        10933340,
+        293,
+        1794840263967487832,
+        1794840263967487832
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/mkfs-ack-source.raw": [
+        66314,
+        10933344,
+        0,
+        1794840270386690090,
+        1794840270386690090
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/qemu-ack-fault.raw": [
+        66314,
+        10933347,
+        2385,
+        1794840271700789029,
+        1794840271700789029
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/ack-authority.raw": [
+        66314,
+        10933345,
+        33554432,
+        1794840270393857966,
+        1794840270393857966
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/kernel": [
+        66314,
+        10933342,
+        19016040,
+        1794840270383543165,
+        1794840270383543165
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/ldd-0.raw": [
+        66314,
+        10933338,
+        313,
+        1794840263818487824,
+        1794840263818487824
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116c/mkfs-ack-authority.raw": [
+        66314,
+        10933346,
+        0,
+        1794840270392444542,
+        1794840270392444542
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/ack-source.raw": [
+        66314,
+        10933358,
+        67108864,
+        1794840359893492955,
+        1794840359893492955
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/raw.log": [
+        66314,
+        10933349,
+        16474,
+        1794840359903492955,
+        1794840359903492955
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/ldd-1.raw": [
+        66314,
+        10933354,
+        429,
+        1794840350629492460,
+        1794840350629492460
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/initrd.gz": [
+        66314,
+        10933356,
+        16669134,
+        1794840357011827416,
+        1794840357011827416
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/terminal.json": [
+        66314,
+        10933365,
+        40503,
+        1794840360071657969,
+        1794840360071657969
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/ldd-2.raw": [
+        66314,
+        10933355,
+        293,
+        1794840350673492463,
+        1794840350673492463
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/mkfs-ack-source.raw": [
+        66314,
+        10933359,
+        0,
+        1794840357044865484,
+        1794840357044865484
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/qemu-ack-fault.raw": [
+        66314,
+        10933362,
+        679,
+        1794840358402492875,
+        1794840358402492875
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/qemu-ack-recover.raw": [
+        66314,
+        10933364,
+        767,
+        1794840359903492955,
+        1794840359903492955
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/ack-authority.raw": [
+        66314,
+        10933360,
+        33554432,
+        1794840359895492955,
+        1794840359895492955
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/kernel": [
+        66314,
+        10933357,
+        19016040,
+        1794840357035704396,
+        1794840357035704396
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/ldd-0.raw": [
+        66314,
+        10933353,
+        313,
+        1794840350622492460,
+        1794840350622492460
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/mkfs-ack-authority.raw": [
+        66314,
+        10933361,
+        0,
+        1794840357049346046,
+        1794840357049346046
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116d/forensic/ack-authority.never-attach": [
+        66314,
+        10933363,
+        33554432,
+        1794840358484492880,
+        1794840358520492882
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/ack-source.raw": [
+        66314,
+        10933374,
+        67108864,
+        1794840475855499148,
+        1794840475855499148
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-prepare-write-recover.raw": [
+        66314,
+        10933449,
+        788,
+        1794840489665686212,
+        1794840489665686212
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/prepared-source.raw": [
+        66314,
+        10933412,
+        67108864,
+        1794840478283499278,
+        1794840478283499278
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/raw.log": [
+        66314,
+        10933368,
+        192945,
+        1794840499374324775,
+        1794840499374324775
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/prepare-write-recover-source.raw": [
+        66314,
+        10933448,
+        67108864,
+        1794840489659499885,
+        1794840489659499885
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-finalize-write-fault.raw": [
+        66314,
+        10933462,
+        1437,
+        1794840494747294583,
+        1794840494747294583
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/ldd-1.raw": [
+        66314,
+        10933370,
+        429,
+        1794840466842498667,
+        1794840466842498667
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/source-write-source.raw": [
+        66314,
+        10933426,
+        67108864,
+        1794840482080499480,
+        1794840482080499480
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/prepared-authority.raw": [
+        66314,
+        10933414,
+        33554432,
+        1794840478322499280,
+        1794840478322499280
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/prepare-write-source.raw": [
+        66314,
+        10933442,
+        67108864,
+        1794840487754499783,
+        1794840487754499783
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-source-write-recover.raw": [
+        66314,
+        10933433,
+        776,
+        1794840483598217537,
+        1794840483598217537
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/finalize-write-recover-source.raw": [
+        66314,
+        10933464,
+        67108864,
+        1794840496317500241,
+        1794840496317500241
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/finalize-flush-authority.raw": [
+        66314,
+        10933468,
+        33554432,
+        1794840499370500404,
+        1794840499370500404
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-pre-finalize-authority.raw": [
+        66314,
+        10933422,
+        0,
+        1794840478383537944,
+        1794840478383537944
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-pre-finalize-fault.raw": [
+        66314,
+        10933423,
+        682,
+        1794840479494499342,
+        1794840479494499342
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/initrd.gz": [
+        66314,
+        10933372,
+        16669134,
+        1794840473289331265,
+        1794840473289331265
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-source-flush-source.raw": [
+        66314,
+        10933435,
+        0,
+        1794840483648637433,
+        1794840483648637433
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/prepare-flush-source.raw": [
+        66314,
+        10933450,
+        67108864,
+        1794840491270499971,
+        1794840491270499971
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-finalize-flush-authority.raw": [
+        66314,
+        10933469,
+        0,
+        1794840496374287210,
+        1794840496374287210
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/prepare-write-authority.raw": [
+        66314,
+        10933444,
+        33554432,
+        1794840489661499885,
+        1794840489661499885
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/terminal.json": [
+        66314,
+        10933474,
+        305945,
+        1794840500503944694,
+        1794840500503944694
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/ldd-2.raw": [
+        66314,
+        10933371,
+        293,
+        1794840466886498669,
+        1794840466886498669
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-finalize-write-recover.raw": [
+        66314,
+        10933465,
+        789,
+        1794840496324006829,
+        1794840496324006829
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/finalize-flush-recover-source.raw": [
+        66314,
+        10933472,
+        67108864,
+        1794840499368500404,
+        1794840499368500404
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/prepare-flush-authority.raw": [
+        66314,
+        10933452,
+        33554432,
+        1794840493147500071,
+        1794840493147500071
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/pre-finalize-source.raw": [
+        66314,
+        10933419,
+        67108864,
+        1794840480870499416,
+        1794840480870499416
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-source-flush-fault.raw": [
+        66314,
+        10933438,
+        1287,
+        1794840484969780293,
+        1794840484969780293
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-ack-source.raw": [
+        66314,
+        10933375,
+        0,
+        1794840473316891493,
+        1794840473316891493
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-prepare-write-authority.raw": [
+        66314,
+        10933445,
+        0,
+        1794840486554309538,
+        1794840486554309538
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-pre-finalize-recover.raw": [
+        66314,
+        10933425,
+        785,
+        1794840480877104982,
+        1794840480877104982
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-prepare-flush-fault.raw": [
+        66314,
+        10933454,
+        1291,
+        1794840491395499978,
+        1794840491395499978
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-ack-fault.raw": [
+        66314,
+        10933378,
+        679,
+        1794840474540883091,
+        1794840474540883091
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-ack-recover.raw": [
+        66314,
+        10933411,
+        767,
+        1794840475861476362,
+        1794840475861476362
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/source-flush-authority.raw": [
+        66314,
+        10933436,
+        33554432,
+        1794840486494499716,
+        1794840486494499716
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-source-flush-authority.raw": [
+        66314,
+        10933437,
+        0,
+        1794840483652215022,
+        1794840483652215022
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-source-write-fault.raw": [
+        66314,
+        10933430,
+        1172,
+        1794840482205499487,
+        1794840482205499487
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-prepare-flush-authority.raw": [
+        66314,
+        10933453,
+        0,
+        1794840489718996159,
+        1794840489718996159
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-prepare-write-fault.raw": [
+        66314,
+        10933446,
+        1175,
+        1794840487874900099,
+        1794840487874900099
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/ack-authority.raw": [
+        66314,
+        10933376,
+        33554432,
+        1794840475857499148,
+        1794840475857499148
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/kernel": [
+        66314,
+        10933373,
+        19016040,
+        1794840473313752580,
+        1794840473313752580
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-finalize-write-authority.raw": [
+        66314,
+        10933461,
+        0,
+        1794840493205342584,
+        1794840493205342584
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-finalize-write-source.raw": [
+        66314,
+        10933459,
+        0,
+        1794840493201630708,
+        1794840493201630708
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/source-write-recover-source.raw": [
+        66314,
+        10933432,
+        67108864,
+        1794840483562499560,
+        1794840483562499560
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/pre-finalize-authority.raw": [
+        66314,
+        10933421,
+        33554432,
+        1794840480873499416,
+        1794840480873499416
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/finalize-write-authority.raw": [
+        66314,
+        10933460,
+        33554432,
+        1794840496319500241,
+        1794840496319500241
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-prepare-write-source.raw": [
+        66314,
+        10933443,
+        0,
+        1794840486551516418,
+        1794840486551516418
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-prepared-fault.raw": [
+        66314,
+        10933416,
+        680,
+        1794840477042499211,
+        1794840477042499211
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-prepared-recover.raw": [
+        66314,
+        10933418,
+        768,
+        1794840478332020673,
+        1794840478332020673
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/source-flush-recover-source.raw": [
+        66314,
+        10933440,
+        67108864,
+        1794840486464499715,
+        1794840486464499715
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-finalize-flush-recover.raw": [
+        66314,
+        10933473,
+        789,
+        1794840499374324775,
+        1794840499374324775
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-prepare-flush-source.raw": [
+        66314,
+        10933451,
+        0,
+        1794840489715497008,
+        1794840489715497008
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-pre-finalize-source.raw": [
+        66314,
+        10933420,
+        0,
+        1794840478380678367,
+        1794840478380678367
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-source-flush-recover.raw": [
+        66314,
+        10933441,
+        776,
+        1794840486512115510,
+        1794840486512115510
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/finalize-flush-source.raw": [
+        66314,
+        10933466,
+        67108864,
+        1794840497667500313,
+        1794840497667500313
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/source-flush-source.raw": [
+        66314,
+        10933434,
+        67108864,
+        1794840484967844802,
+        1794840484967844802
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/prepare-flush-recover-source.raw": [
+        66314,
+        10933456,
+        67108864,
+        1794840493145500071,
+        1794840493145500071
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-finalize-flush-source.raw": [
+        66314,
+        10933467,
+        0,
+        1794840496370562629,
+        1794840496370562629
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/ldd-0.raw": [
+        66314,
+        10933369,
+        313,
+        1794840466836498666,
+        1794840466836498666
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-ack-authority.raw": [
+        66314,
+        10933377,
+        0,
+        1794840473320869419,
+        1794840473320869419
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/source-write-authority.raw": [
+        66314,
+        10933428,
+        33554432,
+        1794840483588499561,
+        1794840483588499561
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-prepared-source.raw": [
+        66314,
+        10933413,
+        0,
+        1794840475910543163,
+        1794840475910543163
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-finalize-flush-fault.raw": [
+        66314,
+        10933470,
+        1417,
+        1794840497778707140,
+        1794840497778707140
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-source-write-source.raw": [
+        66314,
+        10933427,
+        0,
+        1794840480927565605,
+        1794840480927565605
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-source-write-authority.raw": [
+        66314,
+        10933429,
+        0,
+        1794840480931767608,
+        1794840480931767608
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/qemu-prepare-flush-recover.raw": [
+        66314,
+        10933457,
+        788,
+        1794840493151428143,
+        1794840493151428143
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/mkfs-prepared-authority.raw": [
+        66314,
+        10933415,
+        0,
+        1794840475913924187,
+        1794840475913924187
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/finalize-write-source.raw": [
+        66314,
+        10933458,
+        67108864,
+        1794840494637500151,
+        1794840494637500151
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/forensic/prepare-write-authority.never-attach": [
+        66314,
+        10933447,
+        33554432,
+        1794840487971499795,
+        1794840488012499797
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/forensic/ack-authority.never-attach": [
+        66314,
+        10933379,
+        33554432,
+        1794840474627499082,
+        1794840474664499084
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/forensic/source-flush-authority.never-attach": [
+        66314,
+        10933439,
+        33554432,
+        1794840485051499639,
+        1794840485091499641
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/forensic/prepare-flush-authority.never-attach": [
+        66314,
+        10933455,
+        33554432,
+        1794840491476499982,
+        1794840491517499984
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/forensic/source-write-authority.never-attach": [
+        66314,
+        10933431,
+        33554432,
+        1794840482284499491,
+        1794840482322499493
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/forensic/pre-finalize-authority.never-attach": [
+        66314,
+        10933424,
+        33554432,
+        1794840479575499347,
+        1794840479614499349
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/forensic/finalize-flush-authority.never-attach": [
+        66314,
+        10933471,
+        33554432,
+        1794840497866500323,
+        1794840497907500326
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/forensic/finalize-write-authority.never-attach": [
+        66314,
+        10933463,
+        33554432,
+        1794840494836500162,
+        1794840494876500164
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116e/forensic/prepared-authority.never-attach": [
+        66314,
+        10933417,
+        33554432,
+        1794840477127499216,
+        1794840477163499218
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/ack-source.raw": [
+        66314,
+        10933564,
+        67108864,
+        1794840858910519605,
+        1794840858910519605
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-prepare-write-recover.raw": [
+        66314,
+        10933613,
+        788,
+        1794840870644386803,
+        1794840870644386803
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/prepared-source.raw": [
+        66314,
+        10933576,
+        67108864,
+        1794840861012519718,
+        1794840861012519718
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/raw.log": [
+        66314,
+        10933558,
+        192803,
+        1794840878581818808,
+        1794840878581818808
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/prepare-write-recover-source.raw": [
+        66314,
+        10933612,
+        67108864,
+        1794840870637520232,
+        1794840870637520232
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-finalize-write-fault.raw": [
+        66314,
+        10933626,
+        1437,
+        1794840874426158621,
+        1794840874426158621
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/ldd-1.raw": [
+        66314,
+        10933560,
+        429,
+        1794840850242519142,
+        1794840850242519142
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/source-write-source.raw": [
+        66314,
+        10933590,
+        67108864,
+        1794840864348519896,
+        1794840864348519896
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/prepared-authority.raw": [
+        66314,
+        10933578,
+        33554432,
+        1794840861038519719,
+        1794840861038519719
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/prepare-write-source.raw": [
+        66314,
+        10933606,
+        67108864,
+        1794840869170520153,
+        1794840869170520153
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-source-write-recover.raw": [
+        66314,
+        10933597,
+        776,
+        1794840865726866674,
+        1794840865726866674
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/finalize-write-recover-source.raw": [
+        66314,
+        10933628,
+        67108864,
+        1794840875913520513,
+        1794840875913520513
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/finalize-flush-authority.raw": [
+        66314,
+        10933632,
+        33554432,
+        1794840878575520656,
+        1794840878575520656
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-pre-finalize-authority.raw": [
+        66314,
+        10933586,
+        0,
+        1794840861101516345,
+        1794840861101516345
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-pre-finalize-fault.raw": [
+        66314,
+        10933587,
+        682,
+        1794840862107519776,
+        1794840862107519776
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/initrd.gz": [
+        66314,
+        10933562,
+        16669134,
+        1794840856691454850,
+        1794840856691454850
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-source-flush-source.raw": [
+        66314,
+        10933599,
+        0,
+        1794840865773556135,
+        1794840865773556135
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/prepare-flush-source.raw": [
+        66314,
+        10933614,
+        67108864,
+        1794840871686520288,
+        1794840871686520288
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-finalize-flush-authority.raw": [
+        66314,
+        10933633,
+        0,
+        1794840875961994554,
+        1794840875961994554
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/prepare-write-authority.raw": [
+        66314,
+        10933608,
+        33554432,
+        1794840870639520232,
+        1794840870639520232
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/terminal.json": [
+        66314,
+        10933640,
+        306055,
+        1794840879408500726,
+        1794840879408500726
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/ldd-2.raw": [
+        66314,
+        10933561,
+        293,
+        1794840850279519144,
+        1794840850279519144
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-finalize-write-recover.raw": [
+        66314,
+        10933629,
+        789,
+        1794840875918520514,
+        1794840875918520514
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/finalize-flush-recover-source.raw": [
+        66314,
+        10933636,
+        67108864,
+        1794840878567520655,
+        1794840878567520655
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/prepare-flush-authority.raw": [
+        66314,
+        10933616,
+        33554432,
+        1794840873199520368,
+        1794840873199520368
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/pre-finalize-source.raw": [
+        66314,
+        10933583,
+        67108864,
+        1794840863295519839,
+        1794840863295519839
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-source-flush-fault.raw": [
+        66314,
+        10933602,
+        1287,
+        1794840866890520031,
+        1794840866890520031
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-ack-source.raw": [
+        66314,
+        10933565,
+        0,
+        1794840856712814236,
+        1794840856712814236
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-prepare-write-authority.raw": [
+        66314,
+        10933609,
+        0,
+        1794840868175230454,
+        1794840868175230454
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-pre-finalize-recover.raw": [
+        66314,
+        10933589,
+        785,
+        1794840863302013253,
+        1794840863302013253
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-prepare-flush-fault.raw": [
+        66314,
+        10933618,
+        1291,
+        1794840871809192181,
+        1794840871809192181
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-ack-fault.raw": [
+        66314,
+        10933572,
+        679,
+        1794840857741900744,
+        1794840857741900744
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-ack-recover.raw": [
+        66314,
+        10933575,
+        767,
+        1794840858917604154,
+        1794840858917604154
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/source-flush-authority.raw": [
+        66314,
+        10933600,
+        33554432,
+        1794840868108520097,
+        1794840868108520097
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-source-flush-authority.raw": [
+        66314,
+        10933601,
+        0,
+        1794840865776439517,
+        1794840865776439517
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-source-write-fault.raw": [
+        66314,
+        10933594,
+        1172,
+        1794840864471011406,
+        1794840864471011406
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-prepare-flush-authority.raw": [
+        66314,
+        10933617,
+        0,
+        1794840870685910141,
+        1794840870685910141
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-prepare-write-fault.raw": [
+        66314,
+        10933610,
+        1175,
+        1794840869292660901,
+        1794840869292660901
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/ack-authority.raw": [
+        66314,
+        10933566,
+        33554432,
+        1794840858913519605,
+        1794840858913519605
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/kernel": [
+        66314,
+        10933563,
+        19016040,
+        1794840856709580918,
+        1794840856709580918
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-finalize-write-authority.raw": [
+        66314,
+        10933625,
+        0,
+        1794840873256225103,
+        1794840873256225103
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-finalize-write-source.raw": [
+        66314,
+        10933623,
+        0,
+        1794840873246499097,
+        1794840873246499097
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/source-write-recover-source.raw": [
+        66314,
+        10933596,
+        67108864,
+        1794840865686519967,
+        1794840865686519967
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/pre-finalize-authority.raw": [
+        66314,
+        10933585,
+        33554432,
+        1794840863298519840,
+        1794840863298519840
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/finalize-write-authority.raw": [
+        66314,
+        10933624,
+        33554432,
+        1794840875915520513,
+        1794840875915520513
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-prepare-write-source.raw": [
+        66314,
+        10933607,
+        0,
+        1794840868171524871,
+        1794840868171524871
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-prepared-fault.raw": [
+        66314,
+        10933580,
+        680,
+        1794840859971519662,
+        1794840859971519662
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-prepared-recover.raw": [
+        66314,
+        10933582,
+        768,
+        1794840861047965513,
+        1794840861047965513
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/source-flush-recover-source.raw": [
+        66314,
+        10933604,
+        67108864,
+        1794840868085520095,
+        1794840868085520095
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-finalize-flush-recover.raw": [
+        66314,
+        10933637,
+        789,
+        1794840878581818808,
+        1794840878581818808
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-prepare-flush-source.raw": [
+        66314,
+        10933615,
+        0,
+        1794840870682793657,
+        1794840870682793657
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-pre-finalize-source.raw": [
+        66314,
+        10933584,
+        0,
+        1794840861097556932,
+        1794840861097556932
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-source-flush-recover.raw": [
+        66314,
+        10933605,
+        776,
+        1794840868117774660,
+        1794840868117774660
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/finalize-flush-source.raw": [
+        66314,
+        10933630,
+        67108864,
+        1794840877003520572,
+        1794840877003520572
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/source-flush-source.raw": [
+        66314,
+        10933598,
+        67108864,
+        1794840866889520031,
+        1794840866889520031
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/prepare-flush-recover-source.raw": [
+        66314,
+        10933620,
+        67108864,
+        1794840873193520368,
+        1794840873193520368
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-finalize-flush-source.raw": [
+        66314,
+        10933631,
+        0,
+        1794840875958634965,
+        1794840875958634965
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/ldd-0.raw": [
+        66314,
+        10933559,
+        313,
+        1794840850234519142,
+        1794840850234519142
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-ack-authority.raw": [
+        66314,
+        10933569,
+        0,
+        1794840856717615749,
+        1794840856717615749
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/source-write-authority.raw": [
+        66314,
+        10933592,
+        33554432,
+        1794840865717519969,
+        1794840865717519969
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-prepared-source.raw": [
+        66314,
+        10933577,
+        0,
+        1794840858952539122,
+        1794840858952539122
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-finalize-flush-fault.raw": [
+        66314,
+        10933634,
+        1417,
+        1794840877119768938,
+        1794840877119768938
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-source-write-source.raw": [
+        66314,
+        10933591,
+        0,
+        1794840863342522646,
+        1794840863342522646
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-source-write-authority.raw": [
+        66314,
+        10933593,
+        0,
+        1794840863346365465,
+        1794840863346365465
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/qemu-prepare-flush-recover.raw": [
+        66314,
+        10933621,
+        788,
+        1794840873203937921,
+        1794840873203937921
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/mkfs-prepared-authority.raw": [
+        66314,
+        10933579,
+        0,
+        1794840858955788710,
+        1794840858955788710
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/finalize-write-source.raw": [
+        66314,
+        10933622,
+        67108864,
+        1794840874315520428,
+        1794840874315520428
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/forensic/prepare-write-authority.never-attach": [
+        66314,
+        10933611,
+        33554432,
+        1794840869380520164,
+        1794840869419520167
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/forensic/ack-authority.never-attach": [
+        66314,
+        10933573,
+        33554432,
+        1794840857813519547,
+        1794840857849519549
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/forensic/source-flush-authority.never-attach": [
+        66314,
+        10933603,
+        33554432,
+        1794840866967704452,
+        1794840867005520038
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/forensic/prepare-flush-authority.never-attach": [
+        66314,
+        10933619,
+        33554432,
+        1794840871896520299,
+        1794840871937520301
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/forensic/source-write-authority.never-attach": [
+        66314,
+        10933595,
+        33554432,
+        1794840864556519907,
+        1794840864594519909
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/forensic/pre-finalize-authority.never-attach": [
+        66314,
+        10933588,
+        33554432,
+        1794840862193519781,
+        1794840862230519783
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/forensic/finalize-flush-authority.never-attach": [
+        66314,
+        10933635,
+        33554432,
+        1794840877206520582,
+        1794840877270520586
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/forensic/finalize-write-authority.never-attach": [
+        66314,
+        10933627,
+        33554432,
+        1794840874510520438,
+        1794840874581520442
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1116f/forensic/prepared-authority.never-attach": [
+        66314,
+        10933581,
+        33554432,
+        1794840860044545470,
+        1794840860081519668
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/ack-source.raw": [
+        66314,
+        10670988,
+        67108864,
+        1794846299593810169,
+        1794846299593810169
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/raw.log": [
+        66314,
+        10661866,
+        9925,
+        1794846268742808522,
+        1794846268742808522
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/ldd-1.raw": [
+        66314,
+        10661891,
+        429,
+        1794846260809808098,
+        1794846260809808098
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/ack-fault.trace": [
+        66314,
+        10670993,
+        25410,
+        1794846299593810169,
+        1794846299593810169
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/initrd.gz": [
+        66314,
+        10670986,
+        16717429,
+        1794846267359646699,
+        1794846267359646699
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/terminal.json": [
+        66314,
+        10670994,
+        60027,
+        1794846407443367661,
+        1794846407443367661
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/ldd-2.raw": [
+        66314,
+        10670984,
+        177,
+        1794846260818808098,
+        1794846260818808098
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/mkfs-ack-source.raw": [
+        66314,
+        10670989,
+        0,
+        1794846267395805269,
+        1794846267395805269
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/qemu-ack-fault.raw": [
+        66314,
+        10670992,
+        1252,
+        1794846268742808522,
+        1794846268742808522
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/ack-authority.raw": [
+        66314,
+        10670990,
+        33554432,
+        1794846299593810169,
+        1794846299593810169
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/kernel": [
+        66314,
+        10670987,
+        19016040,
+        1794846267385860407,
+        1794846267385860407
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/ldd-0.raw": [
+        66314,
+        10661890,
+        313,
+        1794846260798808097,
+        1794846260798808097
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/mkfs-ack-authority.raw": [
+        66314,
+        10670991,
+        0,
+        1794846267401548008,
+        1794846267401548008
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117a/ldd-3.raw": [
+        66314,
+        10670985,
+        293,
+        1794846260867808101,
+        1794846260867808101
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/ack-source.raw": [
+        66314,
+        10671007,
+        67108864,
+        1794846606208826544,
+        1794846606208826544
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/raw.log": [
+        66314,
+        10671000,
+        9875,
+        1794846606219826545,
+        1794846606219826545
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/ldd-1.raw": [
+        66314,
+        10671002,
+        429,
+        1794846598840826151,
+        1794846598840826151
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/ack-fault.trace": [
+        66314,
+        10671012,
+        19070,
+        1794846606208826544,
+        1794846606208826544
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/initrd.gz": [
+        66314,
+        10671005,
+        16740151,
+        1794846605170027390,
+        1794846605170027390
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/terminal.json": [
+        66314,
+        10671013,
+        63128,
+        1794846606251179481,
+        1794846606251179481
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/ldd-2.raw": [
+        66314,
+        10671003,
+        177,
+        1794846598847826151,
+        1794846598847826151
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/mkfs-ack-source.raw": [
+        66314,
+        10671008,
+        0,
+        1794846605191617980,
+        1794846605191617980
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/qemu-ack-fault.raw": [
+        66314,
+        10671011,
+        1186,
+        1794846606219826545,
+        1794846606219826545
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/ack-authority.raw": [
+        66314,
+        10671009,
+        33554432,
+        1794846606207826544,
+        1794846606207826544
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/kernel": [
+        66314,
+        10671006,
+        19016040,
+        1794846605188102446,
+        1794846605188102446
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/ldd-0.raw": [
+        66314,
+        10671001,
+        313,
+        1794846598831826150,
+        1794846598831826150
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/mkfs-ack-authority.raw": [
+        66314,
+        10671010,
+        0,
+        1794846605196228127,
+        1794846605196228127
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117b/ldd-3.raw": [
+        66314,
+        10671004,
+        293,
+        1794846598883826153,
+        1794846598883826153
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/ack-source.raw": [
+        66314,
+        11195881,
+        67108864,
+        1794846693328831197,
+        1794846693328831197
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/raw.log": [
+        66314,
+        11195874,
+        9741,
+        1794846693338831197,
+        1794846693338831197
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/ldd-1.raw": [
+        66314,
+        11195876,
+        429,
+        1794846685660830787,
+        1794846685660830787
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/ack-fault.trace": [
+        66314,
+        11195886,
+        19370,
+        1794846693328831197,
+        1794846693328831197
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/initrd.gz": [
+        66314,
+        11195879,
+        16741336,
+        1794846692051995155,
+        1794846692051995155
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/terminal.json": [
+        66314,
+        11195887,
+        66194,
+        1794846693364406244,
+        1794846693364406244
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/ldd-2.raw": [
+        66314,
+        11195877,
+        177,
+        1794846685666830788,
+        1794846685666830788
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/mkfs-ack-source.raw": [
+        66314,
+        11195882,
+        0,
+        1794846692085383204,
+        1794846692085383204
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/qemu-ack-fault.raw": [
+        66314,
+        11195885,
+        1052,
+        1794846693338831197,
+        1794846693338831197
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/ack-authority.raw": [
+        66314,
+        11195883,
+        33554432,
+        1794846693327831197,
+        1794846693327831197
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/kernel": [
+        66314,
+        11195880,
+        19016040,
+        1794846692078504319,
+        1794846692078504319
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/ldd-0.raw": [
+        66314,
+        11195875,
+        313,
+        1794846685652830787,
+        1794846685652830787
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/mkfs-ack-authority.raw": [
+        66314,
+        11195884,
+        0,
+        1794846692088490338,
+        1794846692088490338
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117c/ldd-3.raw": [
+        66314,
+        11195878,
+        293,
+        1794846685720830791,
+        1794846685720830791
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/ack-source.raw": [
+        66314,
+        11195897,
+        67108864,
+        1794846771605835377,
+        1794846771605835377
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/raw.log": [
+        66314,
+        11195890,
+        9775,
+        1794846771614835378,
+        1794846771614835378
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/ldd-1.raw": [
+        66314,
+        11195892,
+        429,
+        1794846763704834955,
+        1794846763704834955
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/ack-fault.trace": [
+        66314,
+        11195902,
+        19522,
+        1794846771605835377,
+        1794846771605835377
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/initrd.gz": [
+        66314,
+        11195895,
+        16743082,
+        1794846770124667398,
+        1794846770124667398
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/terminal.json": [
+        66314,
+        11195903,
+        69267,
+        1794846771649304943,
+        1794846771649304943
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/ldd-2.raw": [
+        66314,
+        11195893,
+        177,
+        1794846763711834956,
+        1794846763711834956
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/mkfs-ack-source.raw": [
+        66314,
+        11195898,
+        0,
+        1794846770150842379,
+        1794846770150842379
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/qemu-ack-fault.raw": [
+        66314,
+        11195901,
+        1086,
+        1794846771614835378,
+        1794846771614835378
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/ack-authority.raw": [
+        66314,
+        11195899,
+        33554432,
+        1794846771604835377,
+        1794846771604835377
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/kernel": [
+        66314,
+        11195896,
+        19016040,
+        1794846770147571923,
+        1794846770147571923
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/ldd-0.raw": [
+        66314,
+        11195891,
+        313,
+        1794846763696834955,
+        1794846763696834955
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/mkfs-ack-authority.raw": [
+        66314,
+        11195900,
+        0,
+        1794846770155143661,
+        1794846770155143661
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117d/ldd-3.raw": [
+        66314,
+        11195894,
+        293,
+        1794846763755834958,
+        1794846763755834958
+      ]
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e": {
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/ack-source.raw": [
+        66314,
+        11195913,
+        67108864,
+        1794846882134841280,
+        1794846882134841280
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/raw.log": [
+        66314,
+        11195906,
+        18251,
+        1794846882140841280,
+        1794846882140841280
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/ldd-1.raw": [
+        66314,
+        11195908,
+        429,
+        1794846872592840771,
+        1794846872592840771
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/ack-fault.trace": [
+        66314,
+        11195918,
+        24220,
+        1794846880482841192,
+        1794846880482841192
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/initrd.gz": [
+        66314,
+        11195911,
+        16742906,
+        1794846879010269010,
+        1794846879010269010
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/terminal.json": [
+        66314,
+        11195921,
+        95548,
+        1794846882332813956,
+        1794846882332813956
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/ldd-2.raw": [
+        66314,
+        11195909,
+        177,
+        1794846872599840771,
+        1794846872599840771
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/mkfs-ack-source.raw": [
+        66314,
+        11195914,
+        0,
+        1794846879040212400,
+        1794846879040212400
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/qemu-ack-fault.raw": [
+        66314,
+        11195917,
+        2111,
+        1794846880507841193,
+        1794846880507841193
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/qemu-ack-recover.raw": [
+        66314,
+        11195920,
+        767,
+        1794846882140841280,
+        1794846882140841280
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/ack-authority.raw": [
+        66314,
+        11195915,
+        33554432,
+        1794846882136841280,
+        1794846882136841280
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/kernel": [
+        66314,
+        11195912,
+        19016040,
+        1794846879034087152,
+        1794846879034087152
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/ldd-0.raw": [
+        66314,
+        11195907,
+        313,
+        1794846872584840770,
+        1794846872584840770
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/mkfs-ack-authority.raw": [
+        66314,
+        11195916,
+        0,
+        1794846879044340231,
+        1794846879044340231
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/ldd-3.raw": [
+        66314,
+        11195910,
+        293,
+        1794846872642840773,
+        1794846872642840773
+      ],
+      "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1117e/forensic/ack-authority.never-attach": [
+        66314,
+        11195919,
+        33554432,
+        1794846880621841199,
+        1794846880682841203
+      ]
+    }
+  },
+  "aggregateRetainedLimitBytes": 8589934592,
+  "cgroup": {
+    "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/m3wal-1117f.scope",
+    "limits": {
+      "memory.max": "1073741824",
+      "memory.swap.max": "0",
+      "cpu.max": "100000 100000",
+      "pids.max": "128"
+    }
+  },
+  "initramfs": {
+    "compressedBytes": 16744165,
+    "uncompressedBytes": 59580184,
+    "elfBytes": 51314200,
+    "utilityLibraryBytes": 8260112
+  },
+  "inputs": {
+    "/usr/bin/qemu-system-x86_64": {
+      "sha256": "c43e631d642ba63a5af8f02a555fc679c30d38bdda8d4cd08897c3ca1dfa233a",
+      "bytes": 28948824
+    },
+    "/usr/bin/bash": {
+      "sha256": "c14c8f498f3be96f076ceb07d65dba584a86dca3c86b5dce65ed0f6cae73358d",
+      "bytes": 1195144
+    },
+    "/usr/bin/mount": {
+      "sha256": "ca6c26aa2b11a8431481d39ee562bc07a88984f3294f34846d3257ec28ae9c91",
+      "bytes": 43168
+    },
+    "/usr/bin/filefrag": {
+      "sha256": "03f12bac42946df2e1e5d7d1fd7d7958d8117d3d72cf94dc3cf95f4d41172c0a",
+      "bytes": 18464
+    },
+    "/usr/bin/mkfs.ext4": {
+      "sha256": "0ad4756fd858ee0a3a7fcaa34875af0c1050b9bccaf0d363c242d87d70575657",
+      "bytes": 141672
+    },
+    "/proc/config.gz": {
+      "sha256": "fcb764d08890f8d31414c1d87aa3b9c33ac311b867b226993a8200252fb8d3b5",
+      "bytes": 69954
+    },
+    "/boot/vmlinuz-linux": {
+      "sha256": "be373165e6d54bfee8e95b6ba6ffd7e5726544fbb571893773d45c806ba18ef9",
+      "bytes": 17420800
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/qga1017a/kernel": {
+      "sha256": "5806981b246bfd6e0b9f8dd0ee5e5d2e35561aca66bdf8377f190c8abcc4b2cc",
+      "bytes": 19016040
+    },
+    "/home/yu/.codex/worktrees/m3-retry-current/sunrise-edge/target/debug/deps/runtime_sqlite-c358f940b1f1cb01": {
+      "sha256": "bc5bce0b8d3cfaf9435e5629ff0401b3038f15c6adb8a514fe8c12cdf73f42ac",
+      "bytes": 51314200
+    },
+    "/home/yu/src/github.com/sunriselayer/sunrise-edge-validation-1013/m3-qemu11-wal-partial-1117-v6.py": {
+      "sha256": "449ef14ca574b9c70caab77b6fa7b4e033472c8d9a8621b18d4873a70ff9a9ba",
+      "bytes": 59621
+    },
+    "/usr/bin/ldd": {
+      "sha256": "94f332c23cf00596d0387d6f54693664f9a53334d65953b2ff308057cc8530b1",
+      "bytes": 5440
+    },
+    "/usr/lib/libreadline.so.8": {
+      "sha256": "c55b53a98e218df23f2f90ca1015974e122be2ee1d5fc93db1cc097440699b65",
+      "bytes": 371736
+    },
+    "/usr/lib/libc.so.6": {
+      "sha256": "5884f2c5fdfcfca450fe536c1fba8c36d89d84fb0f851522078343b402bbccd9",
+      "bytes": 2215072
+    },
+    "/usr/lib/libncursesw.so.6": {
+      "sha256": "7498a0b0f75deb5417e109d1853679f1a6b201e52e03b247c914fec0a36e3a5b",
+      "bytes": 457936
+    },
+    "/lib64/ld-linux-x86-64.so.2": {
+      "sha256": "0460a979877b7d7c1524d800b38205b70a7b27b294f933f05cbc92a77890b3ff",
+      "bytes": 263152
+    },
+    "/usr/lib64/ld-linux-x86-64.so.2": {
+      "sha256": "0460a979877b7d7c1524d800b38205b70a7b27b294f933f05cbc92a77890b3ff",
+      "bytes": 263152
+    },
+    "/usr/lib/libmount.so.1": {
+      "sha256": "967882491416426236028ba5290b3c88ed9b108d69f3a272a317341146fb2c09",
+      "bytes": 379488
+    },
+    "/usr/lib/libblkid.so.1": {
+      "sha256": "aeaf48e3e206ee795262b7d83be9ba37803f1ee1391bb1ac48359ace60a9d2dd",
+      "bytes": 256896
+    },
+    "/usr/lib/libsystemd.so.0": {
+      "sha256": "c003be7361666431b78a72c73d00a43794a0921326151b6dff20bbb688a3e892",
+      "bytes": 1345056
+    },
+    "/usr/lib/libgcc_s.so.1": {
+      "sha256": "e618cb9c90c2eb3a1dad1cfea5b6c1eebcf2e799ad805976f4ae47bdd61c716a",
+      "bytes": 182512
+    },
+    "/usr/lib/libm.so.6": {
+      "sha256": "05ce19136f2bbf9c588abc4a747d09c3adb9a5a1216de344f2609cca50f262e8",
+      "bytes": 1268336
+    }
+  },
+  "authorityForensicCopiesNeverAttached": true,
+  "cgroupAfter": {
+    "memory.current": "167141376",
+    "memory.peak": "352800768",
+    "memory.swap.current": "0",
+    "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+    "cgroup.procs": "3451733"
+  },
+  "qmpSocketCleanup": [
+    {
+      "name": "source-write-fault",
+      "absent": true,
+      "ownedIdentity": [
+        66314,
+        11195953,
+        49152,
+        1000,
+        1
+      ],
+      "firstCapturedDuringCleanup": false
+    },
+    {
+      "name": "source-write-recover",
+      "absent": true,
+      "ownedIdentity": [
+        66314,
+        11195955,
+        49152,
+        1000,
+        1
+      ],
+      "firstCapturedDuringCleanup": false
+    }
+  ],
+  "cleanupOutputComplete": true,
+  "rawLogBytes": 27475,
+  "rawLogSha256": "3facf5cd20d6360b10fd9e1791863fd063ba0f5aced47707b740eac650999c34",
+  "ownedHostMountsAbsent": true,
+  "seconds": 10.114559193025343,
+  "aggregateGuestSeconds": 2.619700747076422,
+  "grossLogicalIoBytes": 851491832,
+  "controllerObservedIo": {
+    "rchar": 669103581,
+    "wchar": 138892997,
+    "syscr": 9044,
+    "syscw": 7078,
+    "read_bytes": 8585216,
+    "write_bytes": 138907648,
+    "cancelled_write_bytes": 0
+  },
+  "cgroupAfterCleanup": {
+    "memory.current": "167141376",
+    "memory.peak": "352800768",
+    "memory.swap.current": "0",
+    "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+    "cgroup.procs": "3451733"
+  },
+  "memoryPeakBytes": 352800768,
+  "allOwnedChildrenReaped": true,
+  "ownedProcesses": [
+    {
+      "name": "ldd-0",
+      "pid": 3451752,
+      "reaped": true,
+      "eof": true,
+      "pidAbsent": true,
+      "exit": 0,
+      "io": {
+        "rchar": 20635,
+        "wchar": 627,
+        "syscr": 28,
+        "syscw": 10,
+        "read_bytes": 0,
+        "write_bytes": 0,
+        "cancelled_write_bytes": 0
+      },
+      "discardedCleanupBytes": 0
+    },
+    {
+      "name": "ldd-1",
+      "pid": 3451758,
+      "reaped": true,
+      "eof": true,
+      "pidAbsent": true,
+      "exit": 0,
+      "io": {
+        "rchar": 22799,
+        "wchar": 859,
+        "syscr": 30,
+        "syscw": 13,
+        "read_bytes": 0,
+        "write_bytes": 0,
+        "cancelled_write_bytes": 0
+      },
+      "discardedCleanupBytes": 0
+    },
+    {
+      "name": "ldd-2",
+      "pid": 3451763,
+      "reaped": true,
+      "eof": true,
+      "pidAbsent": true,
+      "exit": 0,
+      "io": {
+        "rchar": 18451,
+        "wchar": 355,
+        "syscr": 26,
+        "syscw": 7,
+        "read_bytes": 0,
+        "write_bytes": 0,
+        "cancelled_write_bytes": 0
+      },
+      "discardedCleanupBytes": 0
+    },
+    {
+      "name": "ldd-3",
+      "pid": 3451821,
+      "reaped": true,
+      "eof": true,
+      "pidAbsent": true,
+      "exit": 0,
+      "io": {
+        "rchar": 20615,
+        "wchar": 587,
+        "syscr": 28,
+        "syscw": 10,
+        "read_bytes": 0,
+        "write_bytes": 0,
+        "cancelled_write_bytes": 0
+      },
+      "discardedCleanupBytes": 0
+    },
+    {
+      "name": "mkfs-source-write-source",
+      "pid": 3452745,
+      "reaped": true,
+      "eof": true,
+      "pidAbsent": true,
+      "exit": 0,
+      "io": {
+        "rchar": 17465,
+        "wchar": 214016,
+        "syscr": 22,
+        "syscw": 54,
+        "read_bytes": 462848,
+        "write_bytes": 212992,
+        "cancelled_write_bytes": 0
+      },
+      "discardedCleanupBytes": 0
+    },
+    {
+      "name": "mkfs-source-write-authority",
+      "pid": 3452762,
+      "reaped": true,
+      "eof": true,
+      "pidAbsent": true,
+      "exit": 0,
+      "io": {
+        "rchar": 17465,
+        "wchar": 193536,
+        "syscr": 22,
+        "syscw": 49,
+        "read_bytes": 0,
+        "write_bytes": 196608,
+        "cancelled_write_bytes": 0
+      },
+      "discardedCleanupBytes": 0
+    },
+    {
+      "name": "qemu-source-write-fault",
+      "pid": 3452763,
+      "reaped": true,
+      "eof": true,
+      "pidAbsent": true,
+      "exit": -9,
+      "io": {
+        "rchar": 19736684,
+        "wchar": 1868763,
+        "syscr": 1961,
+        "syscw": 5303,
+        "read_bytes": 389120,
+        "write_bytes": 1851392,
+        "cancelled_write_bytes": 0
+      },
+      "discardedCleanupBytes": 0
+    },
+    {
+      "name": "qemu-source-write-recover",
+      "pid": 3453073,
+      "reaped": true,
+      "eof": true,
+      "pidAbsent": true,
+      "exit": -9,
+      "io": {
+        "rchar": 21177306,
+        "wchar": 157616,
+        "syscr": 799,
+        "syscw": 1461,
+        "read_bytes": 1765376,
+        "write_bytes": 151552,
+        "cancelled_write_bytes": 0
+      },
+      "discardedCleanupBytes": 0
+    }
+  ],
+  "generatedBytes": 237144063,
+  "aggregateRetainedBytesBeforeTerminal": 5968399415,
+  "terminalBytes": 114937,
+  "generatedBytesIncludingTerminal": 237259000,
+  "aggregateRetainedBytesIncludingTerminal": 5968514352,
+  "grossLogicalIoBytesIncludingTerminal": 851606769
+}

@@ -1,0 +1,5 @@
+controller.py -text
+terminal.json -text -diff
+raw.log -text -diff
+source-write-fault.trace -text -diff
+evidence.json -text
