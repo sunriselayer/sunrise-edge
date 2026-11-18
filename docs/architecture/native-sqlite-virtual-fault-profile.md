@@ -131,5 +131,10 @@ same-original-authority identity differ explicitly from the ordinary profile.
 The source and authority virtio serials use distinct `s-`/`a-` prefixes plus
 16 nonce hex characters, fitting the 20-byte virtio-blk ID. The external
 controller must request those exact serials before its guest comparison.
+The current local virtual owner selects QEMU 11.1.3 on the booted Arch
+`7.2.15-arch1-1` host with its hashed kernel/config, together with the retained
+Fedora 7.2.9 guest kernel. The [exact input and owner record](../development/validation/2026-11-16-m3-anchored-qemu11/README.md)
+preserves the previous QEMU 10.2.2 host attempt separately. Reselecting this
+local host does not change the nine DR-0266 cuts or cold oracle.
 Execution/completion is recorded in TODO, never inferred from source or QMP
 configuration. Neither variant alone demonstrates torn persistent WAL writes.

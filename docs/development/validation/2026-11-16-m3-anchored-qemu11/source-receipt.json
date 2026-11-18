@@ -1,0 +1,12 @@
+{
+  "observedAtUtc": "2026-11-16T14:56:54.091087+00:00",
+  "sourceHead": "ef6e066d67091626067f3b656232efd3f3177422",
+  "sourceTree": "528f5018a06f1e6e751f6614fa5e66953605759f",
+  "trackedWorktreeClean": true,
+  "buildCommand": "cargo test --locked --offline -p runtime-sqlite --lib --no-run",
+  "buildExit": 0,
+  "buildOutputTail": "    Finished `test` profile [optimized + debuginfo] target(s) in 0.13s\n  Executable unittests src/lib.rs (target/debug/deps/runtime_sqlite-c358f940b1f1cb01)\n",
+  "elfPath": "/home/yu/.codex/worktrees/m3-retry-current/sunrise-edge/target/debug/deps/runtime_sqlite-c358f940b1f1cb01",
+  "elfSha256": "fdf6dfe3c5508b38d7ea0428a3c51d3a54e8de98eeeeee18eeda23af4c071ba7",
+  "elfBytes": 51048200
+}
