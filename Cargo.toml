@@ -78,7 +78,7 @@ sunrise-edge-devnet = { path = "apps/devnet" }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 hidapi = { version = "=2.6.7", default-features = false, features = ["linux-native-basic-udev"] }
 age = { version = "=0.12.1", default-features = false }
-libc = "=0.2.189"
+libc = "=0.2.191"
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 ed25519-zebra = { version = "=4.2.0", default-features = false }
 curve25519-dalek = { version = "=5.0.0", default-features = false }
