@@ -8,6 +8,7 @@
   - economics/FastVote、generic contracts、ingress、lifecycleの最終範囲を同一sourceで監査し、指摘修正と独立再検証を終える。tech-lead approvalや過去の狭いscanは代替しない。
   - M1と監査対象・証拠を共用できる。旧private sourceの独立scanは1,369ファイル中53ファイルの部分進捗にとどまり、完走結果はない。現行mainの最終監査には転用しない。
   - [ ] 最終sourceの上記4領域を独立監査で通す。
+    - [x] 料金計算・予約の限定component: `2214eb9f649eb0688b41c5299a499c62d79fcb87`の`crates/fees` 3ファイルを独立に静的reviewし、Codex Security scan `f3ca21da-bc5f-4ef2-9452-29ff1a0f36c8`は報告対象0件。owning test 35件とClippyが成功した。FastVoteを含む残りの領域と最終source全体の資格には転用しない。
   - [ ] 指摘を修正し、独立に再確認する。
 
 - [ ] **M1: 固定releaseの独立security/release reviewを終える**
