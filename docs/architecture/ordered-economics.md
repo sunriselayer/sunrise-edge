@@ -108,6 +108,14 @@ bytes. It reports every peer separately, synchronizing artifacts and phase
 results before subsequent requests. A failed peer receives no later prefix
 steps in that invocation. Returned outcomes must bind to a candidate in the
 certified three-chain and agree across acknowledged responses.
+[DR-0293](decisions/0293-bounded-consensus-observer-retention.md) adds at most
+one extra observe of the same preverified proposal after a QC acknowledgement
+whose committed list is empty, so a previously evicted speculative body can
+rejoin a retained certificate. Wrapper two-phase arrays omit that third-step
+status; CLI `network-replay` writes it to a reserved `.rehydration` sidecar
+and keeps `.results` in the closed five-field, two-record-per-peer format.
+A nonempty certificate commit skips the extra observe. Extra-observe failure
+does not relabel the QC acknowledgement.
 
 Unsigned HTTP outcomes and replica-local completion reads are acknowledgements,
 not signatures over business results, whole-store durability proofs or network

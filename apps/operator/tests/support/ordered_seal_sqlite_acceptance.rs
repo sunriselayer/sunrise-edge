@@ -448,6 +448,37 @@ fn saved_peer_results(
     saved_configured_peer_results(&validator_ids, prefix, endpoints, rounds)
 }
 
+fn saved_rehydration_sidecar(prefix: &Path, peers: usize, rounds: usize) {
+    let text: String =
+        std::fs::read_to_string(format!("{}.rehydration", prefix.display())).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(
+        lines.next(),
+        Some("rehydration_version=1"),
+        "rehydration sidecar is versioned separately from closed .results"
+    );
+    let mut count = 0usize;
+    for line in lines {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [round, validator, endpoint, rehydration] = fields.as_slice() else {
+            panic!("rehydration sidecar lines are round/validator/endpoint/phase");
+        };
+        assert!(round.starts_with("round="));
+        assert!(validator.starts_with("validator="));
+        assert!(endpoint.starts_with("endpoint_hex="));
+        assert!(
+            rehydration.starts_with("rehydration="),
+            "rehydration failure must not be written as a certificate rejection"
+        );
+        assert!(
+            !rehydration.contains("certificate="),
+            "sidecar must not overwrite or relabel the QC acknowledgement"
+        );
+        count = count.checked_add(1).unwrap();
+    }
+    assert_eq!(count, rounds.checked_mul(peers).unwrap());
+}
+
 pub(super) fn saved_configured_peer_results(
     validator_ids: &[ValidatorId],
     prefix: &Path,
@@ -1523,6 +1554,7 @@ pub(super) fn run_compiled_four_host_seal(
     sunrise_edge_cli::run(replay_args).unwrap();
     let replay_results: BTreeMap<(usize, usize), (String, String)> =
         saved_peer_results(fixture, &replay_prefix, &endpoints, rounds.len());
+    saved_rehydration_sidecar(&replay_prefix, endpoints.len(), rounds.len());
     for (observe_phase, certificate_phase) in replay_results.values() {
         let observed: OrderedEventOutput = acknowledged_output(observe_phase);
         let certified: OrderedEventOutput = acknowledged_output(certificate_phase);
@@ -2155,6 +2187,7 @@ pub(super) async fn run(
         .unwrap();
     let catchup_results: BTreeMap<(usize, usize), (String, String)> =
         saved_peer_results(fixture, &catchup_prefix, &endpoints, rounds.len());
+    saved_rehydration_sidecar(&catchup_prefix, endpoints.len(), rounds.len());
     for ((round, index), (observe_phase, certificate_phase)) in &catchup_results {
         let observed: OrderedEventOutput = acknowledged_output(observe_phase);
         let certified: OrderedEventOutput = acknowledged_output(certificate_phase);
@@ -2424,6 +2457,7 @@ pub(super) async fn run(
         .unwrap();
     let replay_results: BTreeMap<(usize, usize), (String, String)> =
         saved_peer_results(fixture, &replay_prefix, &endpoints, rounds.len());
+    saved_rehydration_sidecar(&replay_prefix, endpoints.len(), rounds.len());
     for (observe_phase, certificate_phase) in replay_results.values() {
         let observed: OrderedEventOutput = acknowledged_output(observe_phase);
         let certified: OrderedEventOutput = acknowledged_output(certificate_phase);

@@ -138,6 +138,65 @@ pub(crate) fn proposal_votes(
     (proposal, votes)
 }
 
+pub(crate) fn leader_crypto<'a>(
+    engine: &ChainedHotStuff,
+    cryptos: &'a [TestCrypto],
+    view: u64,
+) -> &'a TestCrypto {
+    let leader = engine.validator_set().leader(view).unwrap();
+    cryptos
+        .iter()
+        .find(|crypto| crypto.validator == leader)
+        .expect("leader is in the test committee")
+}
+
+pub(crate) fn signed_proposal(
+    engine: &ChainedHotStuff,
+    cryptos: &[TestCrypto],
+    transactions: Vec<Digest32>,
+) -> ConsensusProposal {
+    let genesis = engine.genesis_state(0);
+    engine
+        .propose(
+            &genesis,
+            transactions,
+            leader_crypto(engine, cryptos, genesis.current_view),
+        )
+        .unwrap()
+}
+
+pub(crate) fn signed_proposal_at_view(
+    engine: &ChainedHotStuff,
+    cryptos: &[TestCrypto],
+    view: u64,
+    transactions: Vec<Digest32>,
+) -> ConsensusProposal {
+    let mut state = engine.genesis_state(0);
+    let leader = leader_crypto(engine, cryptos, 1);
+    while state.current_view < view {
+        state = engine
+            .on_event(
+                &state,
+                ConsensusEvent::Tick {
+                    now_unix_millis: state.view_deadline_unix_millis,
+                },
+                leader,
+                leader,
+            )
+            .unwrap()
+            .state;
+    }
+    engine
+        .propose(&state, transactions, leader_crypto(engine, cryptos, view))
+        .unwrap()
+}
+
+pub(crate) fn transaction_digest(tag: u16) -> Digest32 {
+    let mut bytes = [0u8; 32];
+    bytes[..2].copy_from_slice(&tag.to_le_bytes());
+    Digest32::new(HashAlgorithmId::Sha2_256, bytes)
+}
+
 pub(crate) fn certify(
     engine: &ChainedHotStuff,
     states: &mut [ConsensusState],
