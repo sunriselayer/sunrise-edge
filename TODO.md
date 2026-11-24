@@ -1,6 +1,6 @@
 # Sunrise Edge: 現在のTODO
 
-更新: 2026-11-17 (Asia/Singapore)。元85チェックのうち74件は完了、元の未完了は下の11件（親11件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+更新: 2026-11-24 (Asia/Singapore)。元85チェックのうち74件は完了、元の未完了は下の11件（親11件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
 
 ## コード・検証: 親5件
 
@@ -8,6 +8,7 @@
   - economics/FastVote、generic contracts、ingress、lifecycleの最終範囲を同一sourceで監査し、指摘修正と独立再検証を終える。tech-lead approvalや過去の狭いscanは代替しない。
   - M1と監査対象・証拠を共用できる。旧private sourceの独立scanは1,369ファイル中53ファイルの部分進捗にとどまり、完走結果はない。現行mainの最終監査には転用しない。
   - [ ] 最終sourceの上記4領域を独立監査で通す。
+    - [x] 料金計算・予約の限定component: `2214eb9f649eb0688b41c5299a499c62d79fcb87`の`crates/fees` 3ファイルを独立に静的reviewし、Codex Security scan `f3ca21da-bc5f-4ef2-9452-29ff1a0f36c8`は報告対象0件。owning test 35件とClippyが成功した。FastVoteを含む残りの領域と最終source全体の資格には転用しない。
   - [ ] 指摘を修正し、独立に再確認する。
 
 - [ ] **M1: 固定releaseの独立security/release reviewを終える**
@@ -64,6 +65,11 @@
   - [x] `2415dbec`の13-target A/B・RELEASE・完全gateを旧sourceの基準結果として[保存した](docs/development/validation/2026-11-08-m7-release-issue-disposition/README.md#2026-11-11-exact-source-follow-up)。
   - [ ] 最終sourceで再現可能なbuild・実行結果を揃える。
   - [ ] 独立security/release reviewとissue dispositionを終える。
+
+### 非公開監査repoの後片付け
+
+- [x] 今回の非公開指摘3件の修正を[公開mainのcommit `6aedd259`](https://github.com/sunriselayer/sunrise-edge/commit/6aedd259dad94654b659d21b6201df865754b1b1)へ統合し、重複した非公開PRを閉じた。D02/M1の最終独立reviewは別に残る。
+- [ ] 3件のDraft Security Advisoryの対応と必要な非公開証跡の保存を終えたら、一時監査用の非公開repoを廃止する。D02/M1のrelease reviewとは別の後片付けであり、元85件の親条件には加えない。
 
 ### M2初期リリース対象の照合 (2026-11-03)
 
