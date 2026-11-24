@@ -8,8 +8,7 @@
   - economics/FastVote、generic contracts、ingress、lifecycleの最終範囲を同一sourceで監査し、指摘修正と独立再検証を終える。tech-lead approvalや過去の狭いscanは代替しない。
   - M1と監査対象・証拠を共用できる。旧private sourceの独立scanは1,369ファイル中53ファイルの部分進捗にとどまり、完走結果はない。現行mainの最終監査には転用しない。
   - [ ] 最終sourceの上記4領域を独立監査で通す。
-  - [x] 既知の非公開指摘の修正を[公開mainのcommit `6aedd259`](https://github.com/sunriselayer/sunrise-edge/commit/6aedd259dad94654b659d21b6201df865754b1b1)へ統合し、重複した非公開PRを閉じた。最終sourceの4領域監査はこの結果だけでは完了しない。
-  - [ ] 最終sourceの監査で残る指摘を修正し、独立に再確認する。
+  - [ ] 指摘を修正し、独立に再確認する。
 
 - [ ] **M1: 固定releaseの独立security/release reviewを終える**
   - code/deployment仕様、contracts、economics、handoff/activation、ingress、storage、signingを固定し、指摘・修正・残余リスクを独立に確認する。D02と同じ範囲の結果は共用する。
@@ -68,6 +67,7 @@
 
 ### 非公開監査repoの後片付け
 
+- [x] 今回の非公開指摘3件の修正を[公開mainのcommit `6aedd259`](https://github.com/sunriselayer/sunrise-edge/commit/6aedd259dad94654b659d21b6201df865754b1b1)へ統合し、重複した非公開PRを閉じた。D02/M1の最終独立reviewは別に残る。
 - [ ] D02/M1の最終独立reviewと3件のDraft Security Advisoryの処理を終え、必要な非公開証跡を保存した後、一時監査用の非公開repoを廃止する。元85件の親条件には加えない。
 
 ### M2初期リリース対象の照合 (2026-11-03)
