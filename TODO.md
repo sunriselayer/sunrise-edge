@@ -9,6 +9,8 @@
   - M1と監査対象・証拠を共用できる。旧private sourceの独立scanは1,369ファイル中53ファイルの部分進捗にとどまり、完走結果はない。現行mainの最終監査には転用しない。
   - [ ] 最終sourceの上記4領域を独立監査で通す。
     - [x] 料金計算・予約の限定component: `2214eb9f649eb0688b41c5299a499c62d79fcb87`の`crates/fees` 3ファイルを独立に静的reviewし、Codex Security scan `f3ca21da-bc5f-4ef2-9452-29ff1a0f36c8`は報告対象0件。owning test 35件とClippyが成功した。FastVoteを含む残りの領域と最終source全体の資格には転用しない。
+    - [x] 債券primitiveの限定component: `1788b948606f11f17321d3c1979ae149200137a1`の`crates/bonds` 2ファイルを独立に静的reviewし、Codex Security scan `e8857ec6-1339-4572-b68c-c8bdc51f63e9`は報告対象0件。owning test 16件とClippyが成功した。現行の非test利用がないadmission/evidence APIを有効化する際のcaller監査、FastVote連携、最終source全体の資格には転用しない。
+    - [x] validator-setの限定component: `78187e757a19f707bb6c469e38b60f5ea8a8cc44`の`crates/validator-set` 2ファイルを独立に静的reviewし、Codex Security scan `d4bcd8ba-dfc3-489b-8168-dccab344973e`は報告対象0件。owning test 12件とClippyが成功した。暗号鍵・署名の実承認とFastVote統合、最終source全体の資格には転用しない。
   - [ ] 指摘を修正し、独立に再確認する。
 
 - [ ] **M1: 固定releaseの独立security/release reviewを終える**
