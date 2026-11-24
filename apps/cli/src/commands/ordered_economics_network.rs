@@ -39,8 +39,9 @@ use sunrise_edge_client::{
     },
     ordered_economics_client::{
         ArtifactSink, MAX_REPLAY_BYTES, MAX_REPLAY_ROUNDS, MAX_SUBMISSION_ROUNDS,
-        OrderedEconomicsEndpoint, PeerPhaseOutcome, PeerResult, authenticate_ordered_candidate,
-        load_trusted_ordered_policy, replay_declared_prefix_with_sink, submit_candidate,
+        OrderedEconomicsEndpoint, PeerPhaseOutcome, PeerResult, RehydrationPhaseOutcome,
+        authenticate_ordered_candidate, load_trusted_ordered_policy,
+        replay_declared_prefix_detailed_with_sink, submit_candidate,
         validate_ordered_economics_endpoints,
     },
 };
@@ -345,10 +346,14 @@ impl ArtifactSink for CliArtifactSink {
 /// Minimal sink for `economics network-replay`: records only per-peer
 /// results, incrementally, synced before the next POST/round -- there is no
 /// manifest or round artifact to persist during replay, only the already-
-/// declared prefix being resent.
+/// declared prefix being resent. Rehydration attribution is written to the
+/// separately reserved sidecar, never as a sixth `.results` field or third
+/// `.results` record.
 struct ReplayResultsSink {
     results: ReservedArtifact,
     results_text: String,
+    rehydration: ReservedArtifact,
+    rehydration_text: String,
 }
 
 impl ArtifactSink for ReplayResultsSink {
@@ -379,6 +384,32 @@ impl ArtifactSink for ReplayResultsSink {
             .persist(line.as_bytes())
             .map_err(|error| std::io::Error::other(error.to_string()))
     }
+
+    fn record_rehydration_result(
+        &mut self,
+        round: usize,
+        validator_id: protocol_types::ValidatorId,
+        endpoint_label: &str,
+        outcome: &RehydrationPhaseOutcome,
+    ) -> std::io::Result<()> {
+        let rehydration: String = rehydration_report(outcome)?;
+        let line: String = format!(
+            "round={round} validator={validator_id} endpoint_hex={} rehydration={rehydration}\n",
+            crate::hex::encode_hex(endpoint_label.as_bytes())
+        );
+        let projected = self
+            .rehydration_text
+            .len()
+            .checked_add(line.len())
+            .filter(|length| *length <= MAX_RESULTS_BYTES)
+            .ok_or_else(|| std::io::Error::other("rehydration sidecar byte bound"))?;
+        self.rehydration_text.reserve(line.len());
+        self.rehydration_text.push_str(&line);
+        debug_assert_eq!(self.rehydration_text.len(), projected);
+        self.rehydration
+            .persist(line.as_bytes())
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    }
 }
 
 fn phase_report(phase: &PeerPhaseOutcome) -> std::io::Result<String> {
@@ -404,6 +435,31 @@ fn phase_report(phase: &PeerPhaseOutcome) -> std::io::Result<String> {
         )),
         PeerPhaseOutcome::Skipped(reason) => Ok(format!(
             "skipped:{}",
+            crate::hex::encode_hex(reason.as_bytes())
+        )),
+    }
+}
+
+fn rehydration_report(phase: &RehydrationPhaseOutcome) -> std::io::Result<String> {
+    match phase {
+        RehydrationPhaseOutcome::NotRequired => Ok("not_required".to_string()),
+        RehydrationPhaseOutcome::Skipped(reason) => Ok(format!(
+            "skipped:{}",
+            crate::hex::encode_hex(reason.as_bytes())
+        )),
+        RehydrationPhaseOutcome::Unattempted(reason) => Ok(format!(
+            "unattempted:{}",
+            crate::hex::encode_hex(reason.as_bytes())
+        )),
+        RehydrationPhaseOutcome::Applied(output) => {
+            phase_report(&PeerPhaseOutcome::Applied(output.clone()))
+        }
+        RehydrationPhaseOutcome::Unreachable(reason) => Ok(format!(
+            "unreachable:{}",
+            crate::hex::encode_hex(reason.as_bytes())
+        )),
+        RehydrationPhaseOutcome::Rejected(reason) => Ok(format!(
+            "rejected:{}",
             crate::hex::encode_hex(reason.as_bytes())
         )),
     }
@@ -583,32 +639,23 @@ fn run_network_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
 
     let loaded = load_policy_and_endpoints(&parsed, schedules)?;
 
-    // Reserve the results file before the first mutating (`observe`/
-    // `certificate`) POST, exactly like `network-submit`.
+    // Reserve the results file and rehydration sidecar before the first
+    // mutating (`observe`/`certificate`) POST, exactly like `network-submit`.
     let out_prefix = parsed.require("--out")?;
     reject_ambiguous_out_prefix("--out", out_prefix)?;
-    let results_reserved = reserve_artifacts(
-        &[(
-            &format!("{out_prefix}.results"),
-            "ordered-economics-results",
-        )],
-        &[],
-    )?;
-    let results = results_reserved
-        .into_iter()
-        .next()
-        .ok_or_else(|| invalid("missing reserved results handle"))?;
-    reject_ambiguous_resolved_path(results.path())?;
-    let mut sink = ReplayResultsSink {
-        results,
-        results_text: String::new(),
-    };
+    let mut sink = reserve_replay_artifacts(out_prefix)?;
+    sink.rehydration
+        .persist(b"rehydration_version=1\n")
+        .map_err(failure)?;
+    sink.rehydration_text.push_str("rehydration_version=1\n");
 
     let (deadline, per_request_cap) = parse_budget(&parsed)?;
-    // Each per-peer result is synced via `sink` before the next POST/round,
-    // so an already-acknowledged or already-rejected prefix step survives
-    // on disk even if a later round then makes this call return `Err`.
-    let outputs = replay_declared_prefix_with_sink(
+    // Each per-peer result and rehydration line is synced via `sink` before
+    // the next POST/round, so an already-acknowledged or already-rejected
+    // prefix step survives on disk even if a later round then makes this
+    // call return `Err`. `.results` stays the closed two-record five-field
+    // format; rehydration never overwrites a certificate acknowledgement.
+    let outputs = replay_declared_prefix_detailed_with_sink(
         &loaded.endpoints,
         &loaded.policy,
         &rounds,
@@ -618,11 +665,38 @@ fn run_network_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
     )
     .map_err(failure)?;
     println!(
-        "replayed_rounds={} outputs={} results={out_prefix}.results",
+        "replayed_rounds={} outputs={} results={out_prefix}.results rehydration={out_prefix}.rehydration",
         rounds.len(),
         outputs.len()
     );
     Ok(())
+}
+
+fn reserve_replay_artifacts(out_prefix: &str) -> Result<ReplayResultsSink, CliError> {
+    let results_path = format!("{out_prefix}.results");
+    let rehydration_path = format!("{out_prefix}.rehydration");
+    let mut reserved = reserve_artifacts(
+        &[
+            (results_path.as_str(), "ordered-economics-results"),
+            (rehydration_path.as_str(), "ordered-economics-rehydration"),
+        ],
+        &[],
+    )?;
+    for artifact in &reserved {
+        reject_ambiguous_resolved_path(artifact.path())?;
+    }
+    let rehydration = reserved
+        .pop()
+        .ok_or_else(|| invalid("missing reserved rehydration handle"))?;
+    let results = reserved
+        .pop()
+        .ok_or_else(|| invalid("missing reserved results handle"))?;
+    Ok(ReplayResultsSink {
+        results,
+        results_text: String::new(),
+        rehydration,
+        rehydration_text: String::new(),
+    })
 }
 
 fn candidate_wrap_flag_specs() -> Vec<crate::args::FlagSpec> {
@@ -1804,6 +1878,103 @@ mod tests {
         // reservation and before any network call -- this proves that
         // check runs before even one artifact can be persisted.
         assert!(reserve_submission_artifacts(&prefix).is_err());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn replay_reserves_results_and_rehydration_before_any_post_and_does_not_overwrite() {
+        let directory = unique_test_directory("replay-reserve");
+        fs::create_dir(&directory).unwrap();
+        let prefix: String = directory.join("out").to_str().unwrap().to_owned();
+        let sink = reserve_replay_artifacts(&prefix).unwrap();
+        assert!(Path::new(&format!("{prefix}.results")).exists());
+        assert!(Path::new(&format!("{prefix}.rehydration")).exists());
+        assert!(
+            fs::read(format!("{prefix}.results")).unwrap().is_empty(),
+            "reservation must precede any results write"
+        );
+        assert!(
+            fs::read(format!("{prefix}.rehydration"))
+                .unwrap()
+                .is_empty(),
+            "reservation must precede any sidecar write"
+        );
+        drop(sink);
+        assert!(
+            reserve_replay_artifacts(&prefix).is_err(),
+            "existing replay artifacts are never overwritten"
+        );
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn replay_results_stay_five_field_two_records_and_rehydration_is_sidecared() {
+        let directory = unique_test_directory("replay-sidecar-format");
+        fs::create_dir(&directory).unwrap();
+        let prefix: String = directory.join("out").to_str().unwrap().to_owned();
+        let mut sink = reserve_replay_artifacts(&prefix).unwrap();
+        sink.rehydration
+            .persist(b"rehydration_version=1\n")
+            .unwrap();
+        sink.rehydration_text.push_str("rehydration_version=1\n");
+        let peer = PeerResult {
+            validator_id: protocol_types::ValidatorId::new([1; 32]),
+            endpoint_label: "peer-1".into(),
+            vote_phase: PeerPhaseOutcome::Skipped("fixture-observe".into()),
+            certificate_phase: PeerPhaseOutcome::Skipped("certificate not sent yet".into()),
+        };
+        sink.record_peer_result(0, &peer).unwrap();
+        let final_peer = PeerResult {
+            validator_id: protocol_types::ValidatorId::new([1; 32]),
+            endpoint_label: "peer-1".into(),
+            vote_phase: PeerPhaseOutcome::Skipped("fixture-observe".into()),
+            certificate_phase: PeerPhaseOutcome::Skipped("fixture-certificate".into()),
+        };
+        sink.record_peer_result(0, &final_peer).unwrap();
+        sink.record_rehydration_result(
+            0,
+            final_peer.validator_id,
+            &final_peer.endpoint_label,
+            &RehydrationPhaseOutcome::NotRequired,
+        )
+        .unwrap();
+        let results = fs::read_to_string(format!("{prefix}.results")).unwrap();
+        let lines: Vec<&str> = results.lines().collect();
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!(fields.len(), 5);
+            assert!(fields[0].starts_with("round="));
+            assert!(fields[1].starts_with("validator="));
+            assert!(fields[2].starts_with("endpoint_hex="));
+            assert!(fields[3].starts_with("vote="));
+            assert!(fields[4].starts_with("certificate="));
+            assert!(!line.contains("rehydration="));
+        }
+        let sidecar = fs::read_to_string(format!("{prefix}.rehydration")).unwrap();
+        let sidecar_lines: Vec<&str> = sidecar.lines().collect();
+        assert_eq!(sidecar_lines[0], "rehydration_version=1");
+        assert_eq!(sidecar_lines.len(), 2);
+        assert!(sidecar_lines[1].contains("rehydration=not_required"));
+        drop(sink);
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn replay_rehydration_sidecar_enforces_its_byte_bound() {
+        let directory = unique_test_directory("replay-sidecar-bound");
+        fs::create_dir(&directory).unwrap();
+        let prefix: String = directory.join("out").to_str().unwrap().to_owned();
+        let mut sink = reserve_replay_artifacts(&prefix).unwrap();
+        sink.rehydration_text = "x".repeat(MAX_RESULTS_BYTES);
+        let error = sink.record_rehydration_result(
+            0,
+            protocol_types::ValidatorId::new([1; 32]),
+            "peer-1",
+            &RehydrationPhaseOutcome::NotRequired,
+        );
+        assert!(error.is_err());
+        drop(sink);
         fs::remove_dir_all(&directory).unwrap();
     }
 }

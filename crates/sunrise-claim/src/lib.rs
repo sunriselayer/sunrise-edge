@@ -16,6 +16,7 @@ mod merkle;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use bech32::{Bech32, primitives::decode::CheckedHrpstring};
 use serde::Deserialize;
 
 pub use adr036::{
@@ -223,19 +224,45 @@ pub struct PayoutOrder {
 }
 
 /// Canonical JSON for a payout order. Keys are alphabetical.
+///
+/// String fields are emitted as JSON strings through [`serde_json::Value`] so
+/// quotes, backslashes, and controls cannot break the object. Amount is a
+/// decimal string and nonce is a number, matching the historical compact bytes.
 pub fn payout_order_bytes(order: &PayoutOrder) -> Vec<u8> {
-    format!(
-        r#"{{"amount":"{}","asset":"{}","chain_id":"{}","claimant":"{}","denom":"{}","destination":"{}","ledger_sha256":"{}","nonce":{}}}"#,
-        order.amount,
-        order.asset,
-        order.chain_id,
-        order.claimant,
-        order.denom,
-        order.destination,
-        order.ledger_sha256,
-        order.nonce
-    )
-    .into_bytes()
+    let mut fields = serde_json::Map::new();
+    fields.insert(
+        "amount".into(),
+        serde_json::Value::String(order.amount.to_string()),
+    );
+    fields.insert(
+        "asset".into(),
+        serde_json::Value::String(order.asset.clone()),
+    );
+    fields.insert(
+        "chain_id".into(),
+        serde_json::Value::String(order.chain_id.clone()),
+    );
+    fields.insert(
+        "claimant".into(),
+        serde_json::Value::String(order.claimant.clone()),
+    );
+    fields.insert(
+        "denom".into(),
+        serde_json::Value::String(order.denom.clone()),
+    );
+    fields.insert(
+        "destination".into(),
+        serde_json::Value::String(order.destination.clone()),
+    );
+    fields.insert(
+        "ledger_sha256".into(),
+        serde_json::Value::String(order.ledger_sha256.clone()),
+    );
+    fields.insert(
+        "nonce".into(),
+        serde_json::Value::Number(order.nonce.into()),
+    );
+    serde_json::Value::Object(fields).to_string().into_bytes()
 }
 
 /// sha256 of [`payout_order_bytes`], hex. The hot wallet records this id.
@@ -271,6 +298,10 @@ impl std::fmt::Display for ClaimError {
 impl std::error::Error for ClaimError {}
 
 /// Checks one claim and updates custody, consumed units, and the nonce.
+///
+/// Destination parsing, payout routing, and checked arithmetic finish before
+/// any `ClaimState` field is published, so every `Err` leaves the state
+/// unchanged.
 pub fn apply_claim(
     state: &mut ClaimState,
     request: &ClaimRequest,
@@ -305,53 +336,57 @@ pub fn apply_claim(
             "merkle proof does not match the root".into(),
         ));
     }
-    if !state.nonces.insert((claimant, auth.nonce)) {
+    let nonce_key = (claimant, auth.nonce);
+    if state.nonces.contains(&nonce_key) {
         return Err(ClaimError::Rejected(format!(
             "nonce {} was already used",
             auth.nonce
         )));
     }
-    let key = (
+    let consumed_key = (
         claimant,
         request.leaf.asset.clone(),
         request.leaf.claimable_at,
     );
-    let already = state.consumed.get(&key).copied().unwrap_or(0);
+    let already = state.consumed.get(&consumed_key).copied().unwrap_or(0);
     let available = request
         .leaf
         .amount
         .checked_sub(already)
         .ok_or(ClaimError::Overflow)?;
     if auth.amount == 0 || auth.amount > available {
-        state.nonces.remove(&(claimant, auth.nonce));
         return Err(ClaimError::Rejected(format!(
             "amount {} exceeds available {}",
             auth.amount, available
         )));
     }
-    state.consumed.insert(key, already + auth.amount);
+    let consumed = already
+        .checked_add(auth.amount)
+        .ok_or(ClaimError::Overflow)?;
     if is_edge_asset(&auth.asset) {
         let recipient = parse_edge_address(&auth.destination)?;
-        let custody = state.custody.entry(auth.asset.clone()).or_insert(0);
-        if auth.amount > *custody {
-            state.nonces.remove(&(claimant, auth.nonce));
-            state.consumed.insert(
-                (claimant, auth.asset.clone(), request.leaf.claimable_at),
-                already,
-            );
+        let custody = state.custody.get(&auth.asset).copied().unwrap_or(0);
+        if auth.amount > custody {
             return Err(ClaimError::Rejected(format!(
                 "amount {} exceeds {} custody {}",
-                auth.amount, auth.asset, *custody
+                auth.amount, auth.asset, custody
             )));
         }
-        *custody -= auth.amount;
-        let balance = state
+        let custody_remaining = custody
+            .checked_sub(auth.amount)
+            .ok_or(ClaimError::Overflow)?;
+        let balance_key = (claimant, auth.asset.clone());
+        let credited = state
             .edge_balance
-            .entry((claimant, auth.asset.clone()))
-            .or_insert(0);
-        *balance = balance
+            .get(&balance_key)
+            .copied()
+            .unwrap_or(0)
             .checked_add(auth.amount)
             .ok_or(ClaimError::Overflow)?;
+        state.nonces.insert(nonce_key);
+        state.consumed.insert(consumed_key, consumed);
+        state.custody.insert(auth.asset.clone(), custody_remaining);
+        state.edge_balance.insert(balance_key, credited);
         return Ok(Settlement::Edge {
             asset: auth.asset.clone(),
             recipient,
@@ -361,6 +396,8 @@ pub fn apply_claim(
     let route = payout_route(&auth.asset)
         .ok_or_else(|| ClaimError::Rejected(format!("asset {} has no payout route", auth.asset)))?;
     validate_external_destination(route, &auth.destination)?;
+    state.nonces.insert(nonce_key);
+    state.consumed.insert(consumed_key, consumed);
     Ok(Settlement::External(PayoutOrder {
         asset: auth.asset.clone(),
         chain_id: route.chain_id.into(),
@@ -375,8 +412,9 @@ pub fn apply_claim(
 
 /// Burns credited USDrise and authorizes an Ethereum USDC send of the same base units.
 ///
-/// The ledger hash and EVM destination are checked before the nonce or balance
-/// changes, so a malformed address or another ledger's signature burns nothing.
+/// Ledger hash, EVM destination, nonce uniqueness, and credited balance are
+/// checked before any `ClaimState` field is published, so every `Err` leaves
+/// the state unchanged.
 pub fn withdraw_usdrise(
     state: &mut ClaimState,
     request: &ClaimRequest,
@@ -392,24 +430,26 @@ pub fn withdraw_usdrise(
         .map_err(|err| ClaimError::Rejected(err.to_string()))?;
     let claimant = adr036::sunrise_address(&auth.claimant)?;
     parse_evm_address(&auth.destination)?;
-    if !state.nonces.insert((claimant, auth.nonce)) {
+    let nonce_key = (claimant, auth.nonce);
+    if state.nonces.contains(&nonce_key) {
         return Err(ClaimError::Rejected(format!(
             "nonce {} was already used",
             auth.nonce
         )));
     }
-    let balance = state
-        .edge_balance
-        .entry((claimant, "usdrise".into()))
-        .or_insert(0);
-    if auth.amount == 0 || auth.amount > *balance {
-        state.nonces.remove(&(claimant, auth.nonce));
+    let balance_key = (claimant, "usdrise".to_string());
+    let balance = state.edge_balance.get(&balance_key).copied().unwrap_or(0);
+    if auth.amount == 0 || auth.amount > balance {
         return Err(ClaimError::Rejected(format!(
             "amount {} exceeds credited USDrise {}",
-            auth.amount, *balance
+            auth.amount, balance
         )));
     }
-    *balance -= auth.amount;
+    let remaining = balance
+        .checked_sub(auth.amount)
+        .ok_or(ClaimError::Overflow)?;
+    state.nonces.insert(nonce_key);
+    state.edge_balance.insert(balance_key, remaining);
     Ok(PayoutOrder {
         asset: "usdrise".into(),
         chain_id: "1".into(),
@@ -466,7 +506,28 @@ fn payout_route(asset: &str) -> Option<PayRoute> {
 }
 
 fn validate_external_destination(route: PayRoute, destination: &str) -> Result<(), ClaimError> {
-    if route.bech32_prefix.is_none() {
+    if let Some(prefix) = route.bech32_prefix {
+        // BIP-173 bounds the full encoded address to 90 characters. Reject
+        // oversized input before checksum work and before consuming a claim.
+        if destination.len() > 90 {
+            return Err(ClaimError::Rejected("invalid bech32 destination".into()));
+        }
+        let checked = CheckedHrpstring::new::<Bech32>(destination)
+            .map_err(|_| ClaimError::Rejected("invalid bech32 destination".into()))?;
+        if !checked.hrp().to_string().eq_ignore_ascii_case(prefix) {
+            return Err(ClaimError::Rejected("invalid bech32 destination".into()));
+        }
+        let bytes: Vec<u8> = checked.byte_iter().collect();
+        // Supported account and contract destinations are 20 or 32 bytes.
+        // Round-tripping also rejects noncanonical or nonzero 5-bit padding.
+        if !matches!(bytes.len(), 20 | 32)
+            || !bech32::encode::<Bech32>(checked.hrp(), &bytes)
+                .map_err(|_| ClaimError::Rejected("invalid bech32 destination".into()))?
+                .eq_ignore_ascii_case(destination)
+        {
+            return Err(ClaimError::Rejected("invalid bech32 destination".into()));
+        }
+    } else {
         parse_evm_address(destination)?;
     }
     Ok(())

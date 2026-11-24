@@ -24,7 +24,11 @@
 //! "record artifacts before sending" requirement. [`replay_declared_prefix`]
 //! resubmits an already-persisted, exact proposal/certificate sequence to
 //! every endpoint's signerless `observe`/`certificate` routes, unchanged and
-//! without voting.
+//! without voting. After an applied certificate whose committed list is empty,
+//! the shared engine sends at most one extra observe of the same preverified
+//! proposal bytes so an evicted speculative body can rejoin a retained QC
+//! (DR-0293). Wrapper two-phase arrays omit that third-step status;
+//! [`replay_declared_prefix_detailed`] reports it.
 //!
 //! `verify_proposal`/`certificate_from_votes` use the real, delivered
 //! `consensus::durable` implementation (`ChainedHotStuff::verify_proposal`
@@ -416,6 +420,19 @@ pub trait ArtifactSink {
     /// Persists separately attributed replica acknowledgements. An unsigned
     /// acknowledgement is never a substitute for the retained certificate.
     fn record_peer_result(&mut self, _round: usize, _peer: &PeerResult) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    /// Optional per-peer rehydration attribution after a QC acknowledgement
+    /// whose committed list was empty. Default implementations persist
+    /// nothing. Callers must not treat this as a third [`Self::record_peer_result`].
+    fn record_rehydration_result(
+        &mut self,
+        _round: usize,
+        _validator_id: ValidatorId,
+        _endpoint_label: &str,
+        _outcome: &RehydrationPhaseOutcome,
+    ) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -1220,11 +1237,62 @@ fn run_one_round<T: Transport>(
 /// `proposal`, so no vote is ever produced) and each certificate to every
 /// endpoint's `certificate` route, unchanged, in the declared order. Never
 /// re-signs or re-derives anything.
-/// One replayed round's per-peer outcome, mirroring [`RoundOutcome`]'s
-/// vote/certificate-phase attribution.
+/// One replayed round's original two-phase per-peer outcome. These arrays
+/// omit third-step rehydration status; use [`DetailedReplayRoundOutcome`]
+/// when that attribution is required. Wrappers still run the safe three-phase
+/// engine and do not report success unless at least one peer completed every
+/// required phase.
 pub struct ReplayRoundOutcome {
     pub observe_phase: Vec<(ValidatorId, PeerPhaseOutcome)>,
     pub certificate_phase: Vec<(ValidatorId, PeerPhaseOutcome)>,
+}
+
+/// Per-peer result of the at-most-once extra observe used to restore a
+/// certified body after speculative eviction (DR-0293).
+#[derive(Debug, Clone)]
+pub enum RehydrationPhaseOutcome {
+    /// Certificate acknowledgement already carried a nonempty committed
+    /// list, proving the body was present and is now QC-protected.
+    NotRequired,
+    /// The extra observe was not attempted because an earlier required
+    /// phase for this peer failed or the peer was already unhealthy.
+    Skipped(String),
+    /// Deadline remaining could not be computed after the QC
+    /// acknowledgement, so the extra observe was not sent.
+    Unattempted(String),
+    /// Extra observe was acknowledged.
+    Applied(OrderedEventOutput),
+    /// Transport failure on the extra observe.
+    Unreachable(String),
+    /// Peer rejected or returned an unbound extra-observe payload.
+    Rejected(String),
+}
+
+/// One replayed round including truthful third-phase attribution.
+pub struct DetailedReplayRoundOutcome {
+    pub observe_phase: Vec<(ValidatorId, PeerPhaseOutcome)>,
+    pub certificate_phase: Vec<(ValidatorId, PeerPhaseOutcome)>,
+    pub rehydration_phase: Vec<(ValidatorId, RehydrationPhaseOutcome)>,
+}
+
+fn replay_round_from_detailed(detailed: DetailedReplayRoundOutcome) -> ReplayRoundOutcome {
+    ReplayRoundOutcome {
+        observe_phase: detailed.observe_phase,
+        certificate_phase: detailed.certificate_phase,
+    }
+}
+
+fn peer_completed_required_replay_phases(
+    observe: &PeerPhaseOutcome,
+    certificate: &PeerPhaseOutcome,
+    rehydration: &RehydrationPhaseOutcome,
+) -> bool {
+    matches!(observe, PeerPhaseOutcome::Applied(_))
+        && matches!(certificate, PeerPhaseOutcome::Applied(_))
+        && matches!(
+            rehydration,
+            RehydrationPhaseOutcome::Applied(_) | RehydrationPhaseOutcome::NotRequired
+        )
 }
 
 /// A declared prefix may contain multiple complete economic windows. This
@@ -1244,7 +1312,8 @@ impl ArtifactSink for NoopArtifactSink {
 }
 
 /// Thin, backward-compatible wrapper over [`replay_declared_prefix_with_sink`]
-/// using a sink that persists nothing.
+/// using a sink that persists nothing. Uses the safe three-phase engine; the
+/// returned arrays omit third-step status.
 pub fn replay_declared_prefix<T: Transport>(
     endpoints: &[OrderedEconomicsEndpoint<T>],
     policy: &OrderedEconomicsPolicy,
@@ -1254,6 +1323,25 @@ pub fn replay_declared_prefix<T: Transport>(
 ) -> Result<Vec<ReplayRoundOutcome>, OrderedEconomicsNetworkError> {
     let mut sink = NoopArtifactSink;
     replay_declared_prefix_with_sink(
+        endpoints,
+        policy,
+        rounds,
+        overall_deadline,
+        per_request_cap,
+        &mut sink,
+    )
+}
+
+/// Detailed signerless replay, including per-peer rehydration attribution.
+pub fn replay_declared_prefix_detailed<T: Transport>(
+    endpoints: &[OrderedEconomicsEndpoint<T>],
+    policy: &OrderedEconomicsPolicy,
+    rounds: &[(Vec<u8>, Vec<u8>)],
+    overall_deadline: Instant,
+    per_request_cap: Duration,
+) -> Result<Vec<DetailedReplayRoundOutcome>, OrderedEconomicsNetworkError> {
+    let mut sink = NoopArtifactSink;
+    replay_declared_prefix_detailed_with_sink(
         endpoints,
         policy,
         rounds,
@@ -1295,7 +1383,9 @@ fn validate_known_blocks(
 /// immediately after each peer own observe/certificate phases complete for
 /// one round -- before moving to the next peer or round -- so an already-
 /// acknowledged or already-rejected prefix step is durably recorded even if
-/// a LATER round then fails and this call returns `Err`.
+/// a LATER round then fails and this call returns `Err`. Third-step
+/// rehydration uses [`ArtifactSink::record_rehydration_result`], never a
+/// third `record_peer_result`. Returned arrays omit third-step status.
 pub fn replay_declared_prefix_with_sink<T: Transport>(
     endpoints: &[OrderedEconomicsEndpoint<T>],
     policy: &OrderedEconomicsPolicy,
@@ -1304,6 +1394,66 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
     per_request_cap: Duration,
     sink: &mut dyn ArtifactSink,
 ) -> Result<Vec<ReplayRoundOutcome>, OrderedEconomicsNetworkError> {
+    Ok(replay_declared_prefix_detailed_with_sink(
+        endpoints,
+        policy,
+        rounds,
+        overall_deadline,
+        per_request_cap,
+        sink,
+    )?
+    .into_iter()
+    .map(replay_round_from_detailed)
+    .collect())
+}
+
+fn merge_acknowledged_committed(
+    output: &OrderedEventOutput,
+    acknowledged: &mut BTreeMap<[u8; 32], OrderedOutcome>,
+) -> Result<(), OrderedEconomicsNetworkError> {
+    for found in &output.committed {
+        if let Some(original) = acknowledged.get(&found.request_id)
+            && original != found
+        {
+            return Err(OrderedEconomicsNetworkError::ConflictingCommittedOutcome);
+        }
+        acknowledged.insert(found.request_id, found.clone());
+    }
+    Ok(())
+}
+
+fn decode_observe_response(response: crate::transport::WireResponse) -> PeerPhaseOutcome {
+    match expect_success(
+        response,
+        node_wire::ordered_economics::ORDERED_EVENT_OUTPUT_MEDIA_TYPE,
+    )
+    .map_err(|error| error.to_string())
+    .and_then(|body| decode_ordered_event_output(&body).map_err(|error| error.to_string()))
+    {
+        Ok(output) => PeerPhaseOutcome::Applied(output),
+        Err(error) => PeerPhaseOutcome::Rejected(error),
+    }
+}
+
+fn rehydration_from_observe(outcome: PeerPhaseOutcome) -> RehydrationPhaseOutcome {
+    match outcome {
+        PeerPhaseOutcome::Applied(output) => RehydrationPhaseOutcome::Applied(output),
+        PeerPhaseOutcome::Unreachable(reason) => RehydrationPhaseOutcome::Unreachable(reason),
+        PeerPhaseOutcome::Rejected(reason) => RehydrationPhaseOutcome::Rejected(reason),
+        PeerPhaseOutcome::Skipped(reason) => RehydrationPhaseOutcome::Skipped(reason),
+    }
+}
+
+/// Same engine as [`replay_declared_prefix_with_sink`], exposing each
+/// third-phase outcome including [`RehydrationPhaseOutcome::NotRequired`].
+pub fn replay_declared_prefix_detailed_with_sink<T: Transport>(
+    endpoints: &[OrderedEconomicsEndpoint<T>],
+    policy: &OrderedEconomicsPolicy,
+    rounds: &[(Vec<u8>, Vec<u8>)],
+    overall_deadline: Instant,
+    per_request_cap: Duration,
+    sink: &mut dyn ArtifactSink,
+) -> Result<Vec<DetailedReplayRoundOutcome>, OrderedEconomicsNetworkError> {
     validate_ordered_economics_endpoints(endpoints, policy.engine().validator_set())?;
     if rounds.is_empty() || rounds.len() > MAX_REPLAY_ROUNDS {
         return Err(OrderedEconomicsNetworkError::Rejected(format!(
@@ -1415,137 +1565,183 @@ pub fn replay_declared_prefix_with_sink<T: Transport>(
     for (round_index, (proposal_bytes, certificate_bytes)) in rounds.iter().enumerate() {
         let mut observe_phase = Vec::with_capacity(endpoints.len());
         let mut certificate_phase = Vec::with_capacity(endpoints.len());
+        let mut rehydration_phase = Vec::with_capacity(endpoints.len());
         for endpoint in endpoints {
-            let (observe_result, certificate_result): (PeerPhaseOutcome, PeerPhaseOutcome) =
-                if unhealthy.contains(&endpoint.validator_id) {
-                    let skip = "skipped: this peer already failed an earlier declared prefix step";
+            let skip_unhealthy =
+                "skipped: this peer already failed an earlier declared prefix step";
+            let (observe_result, certificate_result, mut rehydration_result) = if unhealthy
+                .contains(&endpoint.validator_id)
+            {
+                (
+                    PeerPhaseOutcome::Skipped(skip_unhealthy.to_string()),
+                    PeerPhaseOutcome::Skipped(skip_unhealthy.to_string()),
+                    RehydrationPhaseOutcome::Skipped(skip_unhealthy.to_string()),
+                )
+            } else {
+                let request = WireRequest {
+                    method: Method::Post,
+                    path: ORDERED_ECONOMICS_OBSERVE_PATH.to_string(),
+                    content_type: Some(ORDERED_PROPOSAL_MEDIA_TYPE),
+                    body: proposal_bytes.clone(),
+                    deadline: Some(request_deadline(overall_deadline, per_request_cap)?),
+                };
+                let mut observe_result = match endpoint.client.transport().send(&request) {
+                    Err(error) => PeerPhaseOutcome::Unreachable(error.to_string()),
+                    Ok(response) => decode_observe_response(response),
+                };
+                if let PeerPhaseOutcome::Applied(output) = &observe_result
+                    && let Err(reason) = validate_known_blocks(output, &known_blocks)
+                {
+                    observe_result = PeerPhaseOutcome::Rejected(reason);
+                }
+                if !matches!(observe_result, PeerPhaseOutcome::Applied(_)) {
+                    let skip = "skipped: this peer own observe step failed this round";
                     (
+                        observe_result,
                         PeerPhaseOutcome::Skipped(skip.to_string()),
-                        PeerPhaseOutcome::Skipped(skip.to_string()),
+                        RehydrationPhaseOutcome::Skipped(skip.to_string()),
                     )
                 } else {
+                    sink.record_peer_result(
+                        round_index,
+                        &PeerResult {
+                            validator_id: endpoint.validator_id,
+                            endpoint_label: endpoint.endpoint_label.clone(),
+                            vote_phase: observe_result.clone(),
+                            certificate_phase: PeerPhaseOutcome::Skipped(
+                                "certificate not sent yet".into(),
+                            ),
+                        },
+                    )
+                    .map_err(OrderedEconomicsNetworkError::Artifact)?;
                     let request = WireRequest {
                         method: Method::Post,
-                        path: ORDERED_ECONOMICS_OBSERVE_PATH.to_string(),
-                        content_type: Some(ORDERED_PROPOSAL_MEDIA_TYPE),
-                        body: proposal_bytes.clone(),
+                        path: ORDERED_ECONOMICS_CERTIFICATE_PATH.to_string(),
+                        content_type: Some(ORDERED_CERTIFICATE_MEDIA_TYPE),
+                        body: certificate_bytes.clone(),
                         deadline: Some(request_deadline(overall_deadline, per_request_cap)?),
                     };
-                    let mut observe_result = match endpoint.client.transport().send(&request) {
+                    let mut certificate_result = match endpoint.client.transport().send(&request) {
                         Err(error) => PeerPhaseOutcome::Unreachable(error.to_string()),
-                        Ok(response) => {
-                            match expect_success(
-                                response,
-                                node_wire::ordered_economics::ORDERED_EVENT_OUTPUT_MEDIA_TYPE,
-                            )
-                            .map_err(|error| error.to_string())
-                            .and_then(|body| {
-                                decode_ordered_event_output(&body)
-                                    .map_err(|error| error.to_string())
-                            }) {
-                                Ok(output) => PeerPhaseOutcome::Applied(output),
-                                Err(error) => PeerPhaseOutcome::Rejected(error),
-                            }
-                        }
+                        Ok(response) => decode_observe_response(response),
                     };
-                    if let PeerPhaseOutcome::Applied(output) = &observe_result
+                    if let PeerPhaseOutcome::Applied(output) = &certificate_result
                         && let Err(reason) = validate_known_blocks(output, &known_blocks)
                     {
-                        observe_result = PeerPhaseOutcome::Rejected(reason);
+                        certificate_result = PeerPhaseOutcome::Rejected(reason);
                     }
-                    if !matches!(observe_result, PeerPhaseOutcome::Applied(_)) {
-                        // Never send a certificate to a peer whose own
-                        // observe step for this exact round just failed.
-                        let skip = "skipped: this peer own observe step failed this round";
-                        (observe_result, PeerPhaseOutcome::Skipped(skip.to_string()))
-                    } else {
-                        sink.record_peer_result(
-                            round_index,
-                            &PeerResult {
-                                validator_id: endpoint.validator_id,
-                                endpoint_label: endpoint.endpoint_label.clone(),
-                                vote_phase: observe_result.clone(),
-                                certificate_phase: PeerPhaseOutcome::Skipped(
-                                    "certificate not sent yet".into(),
-                                ),
-                            },
-                        )
-                        .map_err(OrderedEconomicsNetworkError::Artifact)?;
-                        let request = WireRequest {
-                            method: Method::Post,
-                            path: ORDERED_ECONOMICS_CERTIFICATE_PATH.to_string(),
-                            content_type: Some(ORDERED_CERTIFICATE_MEDIA_TYPE),
-                            body: certificate_bytes.clone(),
-                            deadline: Some(request_deadline(overall_deadline, per_request_cap)?),
-                        };
-                        let mut certificate_result =
-                            match endpoint.client.transport().send(&request) {
-                                Err(error) => PeerPhaseOutcome::Unreachable(error.to_string()),
-                                Ok(response) => {
-                                    match expect_success(
-                                    response,
-                                    node_wire::ordered_economics::ORDERED_EVENT_OUTPUT_MEDIA_TYPE,
-                                )
-                                .map_err(|error| error.to_string())
-                                .and_then(|body| {
-                                    decode_ordered_event_output(&body)
-                                        .map_err(|error| error.to_string())
-                                }) {
-                                    Ok(output) => PeerPhaseOutcome::Applied(output),
-                                    Err(error) => PeerPhaseOutcome::Rejected(error),
-                                }
-                                }
-                            };
-                        if let PeerPhaseOutcome::Applied(output) = &certificate_result
-                            && let Err(reason) = validate_known_blocks(output, &known_blocks)
-                        {
-                            certificate_result = PeerPhaseOutcome::Rejected(reason);
+                    let rehydration = match &certificate_result {
+                        PeerPhaseOutcome::Applied(output) if output.committed.is_empty() => {
+                            RehydrationPhaseOutcome::Skipped(
+                                "pending extra observe after empty certificate commit".into(),
+                            )
                         }
-                        (observe_result, certificate_result)
-                    }
-                };
-            if !matches!(observe_result, PeerPhaseOutcome::Applied(_))
-                || !matches!(certificate_result, PeerPhaseOutcome::Applied(_))
-            {
-                unhealthy.insert(endpoint.validator_id);
-            }
+                        PeerPhaseOutcome::Applied(_) => RehydrationPhaseOutcome::NotRequired,
+                        _ => RehydrationPhaseOutcome::Skipped(
+                            "skipped: this peer own certificate step failed this round".into(),
+                        ),
+                    };
+                    (observe_result, certificate_result, rehydration)
+                }
+            };
+            let needs_rehydration = matches!(
+                &certificate_result,
+                PeerPhaseOutcome::Applied(output) if output.committed.is_empty()
+            );
             let peer = PeerResult {
                 validator_id: endpoint.validator_id,
                 endpoint_label: endpoint.endpoint_label.clone(),
                 vote_phase: observe_result,
                 certificate_phase: certificate_result,
             };
-            // Synced before moving to the next peer or round: an already-
-            // acknowledged or already-rejected step survives a later round
-            // failure, even though this call itself still returns `Err`.
+            // The certificate acknowledgement must survive interruption of
+            // the additional POST, just as the initial observe ACK survives
+            // interruption of certificate delivery.
             sink.record_peer_result(round_index, &peer)
                 .map_err(OrderedEconomicsNetworkError::Artifact)?;
             for phase in [&peer.vote_phase, &peer.certificate_phase] {
                 if let PeerPhaseOutcome::Applied(output) = phase {
-                    for found in &output.committed {
-                        if let Some(original) = acknowledged.get(&found.request_id)
-                            && original != found
-                        {
-                            return Err(OrderedEconomicsNetworkError::ConflictingCommittedOutcome);
-                        }
-                        acknowledged.insert(found.request_id, found.clone());
-                    }
+                    merge_acknowledged_committed(output, &mut acknowledged)?;
                 }
+            }
+            if needs_rehydration {
+                rehydration_result = match request_deadline(overall_deadline, per_request_cap) {
+                    Err(OrderedEconomicsNetworkError::OverallDeadlineElapsed) => {
+                        RehydrationPhaseOutcome::Unattempted(
+                            "overall deadline elapsed after certificate acknowledgement".into(),
+                        )
+                    }
+                    Err(error) => RehydrationPhaseOutcome::Unattempted(error.to_string()),
+                    Ok(deadline) => {
+                        let request = WireRequest {
+                            method: Method::Post,
+                            path: ORDERED_ECONOMICS_OBSERVE_PATH.to_string(),
+                            content_type: Some(ORDERED_PROPOSAL_MEDIA_TYPE),
+                            body: proposal_bytes.clone(),
+                            deadline: Some(deadline),
+                        };
+                        let mut extra = match endpoint.client.transport().send(&request) {
+                            Err(error) => RehydrationPhaseOutcome::Unreachable(error.to_string()),
+                            Ok(response) => {
+                                rehydration_from_observe(decode_observe_response(response))
+                            }
+                        };
+                        if let RehydrationPhaseOutcome::Applied(output) = &extra
+                            && let Err(reason) = validate_known_blocks(output, &known_blocks)
+                        {
+                            extra = RehydrationPhaseOutcome::Rejected(reason);
+                        }
+                        extra
+                    }
+                };
+            }
+            let conflict = if let RehydrationPhaseOutcome::Applied(output) = &rehydration_result {
+                merge_acknowledged_committed(output, &mut acknowledged).err()
+            } else {
+                None
+            };
+            if conflict.is_some() {
+                rehydration_result = RehydrationPhaseOutcome::Rejected(
+                    "conflicting committed outcome with a prior acknowledgement".into(),
+                );
+            }
+            sink.record_rehydration_result(
+                round_index,
+                peer.validator_id,
+                &peer.endpoint_label,
+                &rehydration_result,
+            )
+            .map_err(OrderedEconomicsNetworkError::Artifact)?;
+            if let Some(error) = conflict {
+                return Err(error);
+            }
+            if !peer_completed_required_replay_phases(
+                &peer.vote_phase,
+                &peer.certificate_phase,
+                &rehydration_result,
+            ) {
+                unhealthy.insert(endpoint.validator_id);
             }
             observe_phase.push((peer.validator_id, peer.vote_phase.clone()));
             certificate_phase.push((peer.validator_id, peer.certificate_phase.clone()));
+            rehydration_phase.push((peer.validator_id, rehydration_result));
         }
-        if !certificate_phase
+        if !observe_phase
             .iter()
-            .any(|(_, phase)| matches!(phase, PeerPhaseOutcome::Applied(_)))
+            .zip(certificate_phase.iter())
+            .zip(rehydration_phase.iter())
+            .any(|(((_, observe), (_, certificate)), (_, rehydration))| {
+                peer_completed_required_replay_phases(observe, certificate, rehydration)
+            })
         {
             return Err(OrderedEconomicsNetworkError::Rejected(
                 "no replica acknowledged this declared recovery step".into(),
             ));
         }
-        round_outcomes.push(ReplayRoundOutcome {
+        round_outcomes.push(DetailedReplayRoundOutcome {
             observe_phase,
             certificate_phase,
+            rehydration_phase,
         });
     }
     Ok(round_outcomes)
@@ -1806,6 +2002,9 @@ mod recovery_preflight_tests {
         /// When set, every successful POST response echoes this exact
         /// committed outcome, to exercise response-binding validation.
         post_committed: Option<OrderedOutcome>,
+        /// When set, only the matching 1-based POST echoes this committed
+        /// outcome; other successful POSTs use `post_committed`.
+        committed_on_call: Option<(usize, OrderedOutcome)>,
     }
     impl Transport for Mock {
         fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
@@ -1820,9 +2019,14 @@ mod recovery_preflight_tests {
                 {
                     return Err(TransportError::RequestDeadlineExceeded);
                 }
+                let committed = self
+                    .committed_on_call
+                    .as_ref()
+                    .and_then(|(index, outcome)| (*index == count).then(|| outcome.clone()))
+                    .or_else(|| self.post_committed.clone());
                 let output = OrderedEventOutput {
                     messages: Vec::new(),
-                    committed: self.post_committed.clone().into_iter().collect(),
+                    committed: committed.into_iter().collect(),
                 };
                 return Ok(WireResponse {
                     status: 200,
@@ -1896,6 +2100,7 @@ mod recovery_preflight_tests {
                     panic_on_post,
                     fail_posts_from,
                     post_committed: post_committed.clone(),
+                    committed_on_call: None,
                 }),
             })
             .collect();
@@ -1986,7 +2191,7 @@ mod recovery_preflight_tests {
             .len(),
             6
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 12);
+        assert_eq!(calls.load(Ordering::SeqCst), 18);
     }
     #[test]
     fn empty_recovery_and_expired_budget_are_not_success() {
@@ -2043,7 +2248,7 @@ mod recovery_preflight_tests {
         // Real signed empty HotStuff rounds, real mock transport: two
         // successful rounds (4 POSTs: observe+certificate each), then the
         // third round own observe call fails as unreachable.
-        let (peers, calls) = endpoints_with_post_failure(&policy, &[Some(1)], false, Some(5));
+        let (peers, calls) = endpoints_with_post_failure(&policy, &[Some(1)], false, Some(7));
         let rounds = empty_prefix(&policy, &signers, 4);
         let mut sink = RecordingSink {
             records: Vec::new(),
@@ -2060,7 +2265,7 @@ mod recovery_preflight_tests {
             result.is_err(),
             "round 2 own observe failure must surface as Err"
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        assert_eq!(calls.load(Ordering::SeqCst), 7);
         assert!(
             sink.records
                 .iter()
@@ -2114,6 +2319,339 @@ mod recovery_preflight_tests {
     }
 
     #[test]
+    fn empty_certificate_commit_sends_exactly_one_extra_observe() {
+        let (policy, signers) = fixture();
+        let (peers, calls) = endpoints(&policy, &[Some(1)], false);
+        let rounds = empty_prefix(&policy, &signers, 1);
+        let detailed = replay_declared_prefix_detailed(
+            &peers,
+            &policy,
+            &rounds,
+            Instant::now() + Duration::from_secs(2),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert!(matches!(
+            detailed[0].rehydration_phase[0].1,
+            RehydrationPhaseOutcome::Applied(_)
+        ));
+        assert_eq!(
+            replay_declared_prefix(
+                &peers,
+                &policy,
+                &rounds,
+                Instant::now() + Duration::from_secs(2),
+                Duration::from_millis(50),
+            )
+            .unwrap()[0]
+                .certificate_phase
+                .len(),
+            1
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn first_peer_observe_failure_does_not_stop_the_second_peer() {
+        let (policy, signers) = fixture();
+        let rounds = empty_prefix(&policy, &signers, 1);
+        let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let genesis = policy.engine().genesis_state(0);
+        let status = node_core::ordered_economics::encode_ordered_status(&OrderedStatus {
+            current_view: 1,
+            high_qc: genesis.high_qc.clone(),
+            committed_height: 0,
+        })
+        .unwrap();
+        let peers = vec![
+            OrderedEconomicsEndpoint {
+                validator_id: ValidatorId::new([1; 32]),
+                endpoint_label: "peer-0".into(),
+                client: Client::new(Mock {
+                    status: Some(status.clone()),
+                    calls: calls.clone(),
+                    panic_on_post: false,
+                    fail_posts_from: Some(1),
+                    post_committed: None,
+                    committed_on_call: None,
+                }),
+            },
+            OrderedEconomicsEndpoint {
+                validator_id: ValidatorId::new([2; 32]),
+                endpoint_label: "peer-1".into(),
+                client: Client::new(Mock {
+                    status: Some(status),
+                    calls: calls.clone(),
+                    panic_on_post: false,
+                    fail_posts_from: None,
+                    post_committed: None,
+                    committed_on_call: None,
+                }),
+            },
+        ];
+        let detailed = replay_declared_prefix_detailed(
+            &peers,
+            &policy,
+            &rounds,
+            Instant::now() + Duration::from_secs(2),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        assert!(!matches!(
+            detailed[0].observe_phase[0].1,
+            PeerPhaseOutcome::Applied(_)
+        ));
+        assert!(matches!(
+            detailed[0].certificate_phase[0].1,
+            PeerPhaseOutcome::Skipped(_)
+        ));
+        assert!(matches!(
+            detailed[0].rehydration_phase[0].1,
+            RehydrationPhaseOutcome::Skipped(_)
+        ));
+        assert!(matches!(
+            detailed[0].observe_phase[1].1,
+            PeerPhaseOutcome::Applied(_)
+        ));
+        assert!(matches!(
+            detailed[0].certificate_phase[1].1,
+            PeerPhaseOutcome::Applied(_)
+        ));
+        assert!(matches!(
+            detailed[0].rehydration_phase[1].1,
+            RehydrationPhaseOutcome::Applied(_)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn extra_observe_failure_does_not_relabel_the_certificate_ack() {
+        struct AckBeforeThirdSink {
+            inner: RecordingSink,
+            calls: Arc<AtomicUsize>,
+            recorded_failure: bool,
+        }
+        impl ArtifactSink for AckBeforeThirdSink {
+            fn persist(&mut self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+                self.inner.persist(name, bytes)
+            }
+
+            fn record_peer_result(
+                &mut self,
+                round: usize,
+                peer: &PeerResult,
+            ) -> std::io::Result<()> {
+                if matches!(peer.certificate_phase, PeerPhaseOutcome::Applied(_)) {
+                    assert_eq!(
+                        self.calls.load(Ordering::SeqCst),
+                        2,
+                        "persist the QC ACK before starting the third POST"
+                    );
+                }
+                self.inner.record_peer_result(round, peer)
+            }
+
+            fn record_rehydration_result(
+                &mut self,
+                _round: usize,
+                _validator: ValidatorId,
+                _endpoint: &str,
+                phase: &RehydrationPhaseOutcome,
+            ) -> std::io::Result<()> {
+                assert_eq!(self.calls.load(Ordering::SeqCst), 3);
+                assert!(matches!(phase, RehydrationPhaseOutcome::Unreachable(_)));
+                self.recorded_failure = true;
+                Ok(())
+            }
+        }
+        let (policy, signers) = fixture();
+        let (peers, calls) = endpoints_with_post_failure(&policy, &[Some(1)], false, Some(3));
+        let rounds = empty_prefix(&policy, &signers, 1);
+        let mut sink = AckBeforeThirdSink {
+            inner: RecordingSink {
+                records: Vec::new(),
+            },
+            calls: calls.clone(),
+            recorded_failure: false,
+        };
+        let result = replay_declared_prefix_with_sink(
+            &peers,
+            &policy,
+            &rounds,
+            Instant::now() + Duration::from_secs(2),
+            Duration::from_millis(50),
+            &mut sink,
+        );
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert!(sink.recorded_failure);
+        assert!(
+            sink.inner
+                .records
+                .iter()
+                .any(|(round, _, vote, cert)| *round == 0 && *vote && *cert),
+            "certificate acknowledgement must remain recorded as applied"
+        );
+    }
+
+    #[test]
+    fn deadline_after_certificate_ack_records_unattempted_rehydration() {
+        struct ExpireAfterAck {
+            deadline: Instant,
+            certificate_ack: bool,
+            unattempted: bool,
+        }
+        impl ArtifactSink for ExpireAfterAck {
+            fn persist(&mut self, _name: &str, _bytes: &[u8]) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn record_peer_result(
+                &mut self,
+                _round: usize,
+                peer: &PeerResult,
+            ) -> std::io::Result<()> {
+                if matches!(peer.certificate_phase, PeerPhaseOutcome::Applied(_)) {
+                    self.certificate_ack = true;
+                    std::thread::sleep(self.deadline.saturating_duration_since(Instant::now()));
+                }
+                Ok(())
+            }
+
+            fn record_rehydration_result(
+                &mut self,
+                _round: usize,
+                _validator: ValidatorId,
+                _endpoint: &str,
+                phase: &RehydrationPhaseOutcome,
+            ) -> std::io::Result<()> {
+                assert!(self.certificate_ack);
+                assert!(matches!(phase, RehydrationPhaseOutcome::Unattempted(_)));
+                self.unattempted = true;
+                Ok(())
+            }
+        }
+        let (policy, signers) = fixture();
+        let (peers, calls) = endpoints(&policy, &[Some(1)], false);
+        let rounds = empty_prefix(&policy, &signers, 1);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut sink = ExpireAfterAck {
+            deadline,
+            certificate_ack: false,
+            unattempted: false,
+        };
+        assert!(
+            replay_declared_prefix_detailed_with_sink(
+                &peers,
+                &policy,
+                &rounds,
+                deadline,
+                Duration::from_millis(50),
+                &mut sink,
+            )
+            .is_err()
+        );
+        assert!(sink.certificate_ack && sink.unattempted);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn failed_rehydration_skips_that_peers_later_rounds_while_another_continues() {
+        let (policy, signers) = fixture();
+        let (mut peers, calls) = endpoints(&policy, &[Some(1), Some(1)], false);
+        peers[0].client = Client::new(Mock {
+            status: None,
+            calls: calls.clone(),
+            panic_on_post: false,
+            fail_posts_from: Some(3),
+            post_committed: None,
+            committed_on_call: None,
+        });
+        let rounds = empty_prefix(&policy, &signers, 2);
+        let detailed = replay_declared_prefix_detailed(
+            &peers,
+            &policy,
+            &rounds,
+            Instant::now() + Duration::from_secs(2),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        assert!(matches!(
+            detailed[0].certificate_phase[0].1,
+            PeerPhaseOutcome::Applied(_)
+        ));
+        assert!(matches!(
+            detailed[0].rehydration_phase[0].1,
+            RehydrationPhaseOutcome::Unreachable(_)
+        ));
+        assert!(matches!(
+            detailed[1].observe_phase[0].1,
+            PeerPhaseOutcome::Skipped(_)
+        ));
+        assert!(matches!(
+            detailed[1].certificate_phase[0].1,
+            PeerPhaseOutcome::Skipped(_)
+        ));
+        assert!(matches!(
+            detailed[1].rehydration_phase[0].1,
+            RehydrationPhaseOutcome::Skipped(_)
+        ));
+        for round in &detailed {
+            assert!(matches!(
+                round.rehydration_phase[1].1,
+                RehydrationPhaseOutcome::Applied(_)
+            ));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 9);
+    }
+
+    #[test]
+    fn malformed_third_observe_committed_binding_is_rejected() {
+        let (policy, signers) = fixture();
+        let poisoned = OrderedOutcome {
+            candidate_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x33; 32]),
+            request_id: [0x44; 32],
+            block_height: 999,
+            block_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0x55; 32]),
+            output: node_core::NodeOutput::default(),
+        };
+        let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let genesis = policy.engine().genesis_state(0);
+        let peers = vec![OrderedEconomicsEndpoint {
+            validator_id: ValidatorId::new([1; 32]),
+            endpoint_label: "peer-0".into(),
+            client: Client::new(Mock {
+                status: Some(
+                    node_core::ordered_economics::encode_ordered_status(&OrderedStatus {
+                        current_view: 1,
+                        high_qc: genesis.high_qc,
+                        committed_height: 0,
+                    })
+                    .unwrap(),
+                ),
+                calls: calls.clone(),
+                panic_on_post: false,
+                fail_posts_from: None,
+                post_committed: None,
+                committed_on_call: Some((3, poisoned)),
+            }),
+        }];
+        let rounds = empty_prefix(&policy, &signers, 1);
+        assert!(
+            replay_declared_prefix_detailed(
+                &peers,
+                &policy,
+                &rounds,
+                Instant::now() + Duration::from_secs(2),
+                Duration::from_millis(50),
+            )
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
     fn invalid_high_qcs_cannot_supply_a_routing_height() {
         let (policy, signers) = fixture();
         let prefix: Vec<(Vec<u8>, Vec<u8>)> = empty_prefix(&policy, &signers, 1);
@@ -2134,6 +2672,7 @@ mod recovery_preflight_tests {
                 panic_on_post: true,
                 fail_posts_from: None,
                 post_committed: None,
+                committed_on_call: None,
             });
         }
         assert!(
@@ -2168,6 +2707,7 @@ mod recovery_preflight_tests {
             panic_on_post: true,
             fail_posts_from: None,
             post_committed: None,
+            committed_on_call: None,
         });
         let hint: RoutingHint = routing_hint(
             &peers,
@@ -2185,6 +2725,7 @@ mod recovery_preflight_tests {
             panic_on_post: true,
             fail_posts_from: None,
             post_committed: None,
+            committed_on_call: None,
         });
         assert!(
             routing_hint(
@@ -2758,6 +3299,209 @@ mod recovery_preflight_tests {
                 vec![true, false, false]
             );
             assert_eq!(outcome.committed_outcome.block_height, 1);
+        }
+
+        #[test]
+        fn replay_after_speculative_eviction_commits_the_real_candidate() {
+            let mut fixture: SubmissionFixture = submission_fixture(0);
+            let outcome: SubmissionOutcome = submit(&mut fixture, None).unwrap();
+            let authentic = decode_ordered_proposal(&outcome.rounds[0].proposal_bytes).unwrap();
+            let authentic_digest = fixture
+                .policy
+                .engine()
+                .proposal_digest(&authentic.proposal)
+                .unwrap();
+            let replica: SubmissionFixture = submission_fixture(0);
+            let genesis = replica.policy.engine().genesis_state(0);
+            let leader = replica.policy.engine().validator_set().leader(1).unwrap();
+            let mut smaller = None;
+            for tag in 0..=255u8 {
+                let proposal = replica
+                    .policy
+                    .engine()
+                    .propose(
+                        &genesis,
+                        vec![Digest32::new(HashAlgorithmId::Sha2_256, [tag; 32])],
+                        replica
+                            .network
+                            .lock()
+                            .unwrap()
+                            .signers
+                            .iter()
+                            .find(|signer| signer.id == leader)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                if replica.policy.engine().proposal_digest(&proposal).unwrap() < authentic_digest {
+                    smaller = Some(proposal);
+                    break;
+                }
+            }
+            let smaller = smaller.expect("a smaller same-view digest exists");
+            {
+                let mut network = replica.network.lock().unwrap();
+                for state in network.states.values_mut() {
+                    *state = replica
+                        .policy
+                        .engine()
+                        .on_observer_event(
+                            state,
+                            ConsensusEvent::Proposal(smaller.clone()),
+                            &consensus::Ed25519ConsensusVerifier::new(
+                                consensus::UnsupportedSignatureSchemeResponse::FastPathProfileError,
+                            ),
+                        )
+                        .unwrap()
+                        .state;
+                    assert!(state.known_proposal(&authentic_digest).is_none());
+                }
+                network.artifacts = fixture.sink.artifacts.clone();
+            }
+            let prefix: Vec<(Vec<u8>, Vec<u8>)> = outcome
+                .rounds
+                .iter()
+                .map(|round| {
+                    (
+                        round.proposal_bytes.clone(),
+                        round.certificate_bytes.clone(),
+                    )
+                })
+                .collect();
+            let replay = replay_declared_prefix_detailed(
+                &replica.peers,
+                &replica.policy,
+                &prefix,
+                Instant::now() + Duration::from_secs(10),
+                Duration::from_millis(100),
+            )
+            .unwrap();
+            assert_eq!(replay.len(), 3);
+            assert!(matches!(
+                replay[0].rehydration_phase[0].1,
+                RehydrationPhaseOutcome::Applied(_)
+            ));
+            assert!(replay[2].rehydration_phase.iter().any(|(_, phase)| {
+                matches!(
+                    phase,
+                    RehydrationPhaseOutcome::NotRequired | RehydrationPhaseOutcome::Applied(_)
+                )
+            }));
+            let network = replica.network.lock().unwrap();
+            for state in network.states.values() {
+                assert!(state.contains_committed(&outcome.rounds[0].proposal_digest));
+            }
+            let found = network
+                .outcomes
+                .get(&fixture.candidate.request_id)
+                .expect("candidate business outcome must be acknowledged, not only high QC");
+            assert_eq!(found.block_digest, outcome.rounds[0].proposal_digest);
+            assert_eq!(found.block_height, 1);
+        }
+
+        #[test]
+        fn conflicting_third_observe_is_recorded_as_rejected_after_certificate_ack() {
+            struct ConflictingThird {
+                calls: AtomicUsize,
+                genuine: OrderedOutcome,
+                conflicting: OrderedOutcome,
+            }
+            impl Transport for ConflictingThird {
+                fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportError> {
+                    assert_eq!(request.method, Method::Post);
+                    let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                    let committed = match call {
+                        0 => vec![self.genuine.clone()],
+                        2 => vec![self.conflicting.clone()],
+                        _ => Vec::new(),
+                    };
+                    let output = OrderedEventOutput {
+                        messages: Vec::new(),
+                        committed,
+                    };
+                    Ok(event_response(&output))
+                }
+            }
+            struct RecordedThird {
+                certificate_ack: bool,
+                third_rejected: bool,
+            }
+            impl ArtifactSink for RecordedThird {
+                fn persist(&mut self, _name: &str, _bytes: &[u8]) -> std::io::Result<()> {
+                    Ok(())
+                }
+                fn record_peer_result(
+                    &mut self,
+                    _round: usize,
+                    peer: &PeerResult,
+                ) -> std::io::Result<()> {
+                    self.certificate_ack |=
+                        matches!(peer.certificate_phase, PeerPhaseOutcome::Applied(_));
+                    Ok(())
+                }
+                fn record_rehydration_result(
+                    &mut self,
+                    _round: usize,
+                    _validator: ValidatorId,
+                    _endpoint: &str,
+                    phase: &RehydrationPhaseOutcome,
+                ) -> std::io::Result<()> {
+                    assert!(self.certificate_ack);
+                    self.third_rejected = matches!(phase, RehydrationPhaseOutcome::Rejected(_));
+                    Ok(())
+                }
+            }
+            let mut fixture = submission_fixture(0);
+            let outcome = submit(&mut fixture, None).unwrap();
+            let genuine = outcome.committed_outcome.clone();
+            let mut conflicting = genuine.clone();
+            conflicting.output = node_core::NodeOutput::new(
+                vec![
+                    node_core::NodeResponse::new(
+                        node_core::RequestId::new(genuine.request_id).unwrap(),
+                        node_core::NodeResponseStatus::Accepted,
+                        None,
+                    )
+                    .unwrap(),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+            assert_ne!(genuine, conflicting);
+            let endpoint = OrderedEconomicsEndpoint {
+                validator_id: fixture.peers[0].validator_id,
+                endpoint_label: "conflicting-third".into(),
+                client: Client::new(ConflictingThird {
+                    calls: AtomicUsize::new(0),
+                    genuine,
+                    conflicting,
+                }),
+            };
+            let prefix: Vec<(Vec<u8>, Vec<u8>)> = outcome
+                .rounds
+                .iter()
+                .map(|round| {
+                    (
+                        round.proposal_bytes.clone(),
+                        round.certificate_bytes.clone(),
+                    )
+                })
+                .collect();
+            let mut sink = RecordedThird {
+                certificate_ack: false,
+                third_rejected: false,
+            };
+            assert!(matches!(
+                replay_declared_prefix_detailed_with_sink(
+                    &[endpoint],
+                    &fixture.policy,
+                    &prefix,
+                    Instant::now() + Duration::from_secs(2),
+                    Duration::from_millis(50),
+                    &mut sink,
+                ),
+                Err(OrderedEconomicsNetworkError::ConflictingCommittedOutcome)
+            ));
+            assert!(sink.certificate_ack && sink.third_rejected);
         }
 
         #[test]

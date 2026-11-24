@@ -12,9 +12,9 @@
 
 use crate::{
     CERTIFICATE_TYPE_ID, ChainedHotStuff, CommittedBlock, CommittedBlockProof, ConsensusError,
-    ConsensusEvent, ConsensusOutput, ConsensusProposal, ConsensusState, ConsensusVerifier,
-    ConsensusVote, ENCODING_VERSION, MAX_BLOCK_TRANSACTIONS_LIMIT, PROPOSAL_TYPE_ID,
-    QuorumCertificate, VOTE_PAYLOAD_TYPE_ID, VOTE_TYPE_ID, encode_proposal,
+    ConsensusEvent, ConsensusMessage, ConsensusOutput, ConsensusProposal, ConsensusState,
+    ConsensusVerifier, ConsensusVote, ENCODING_VERSION, MAX_BLOCK_TRANSACTIONS_LIMIT,
+    PROPOSAL_TYPE_ID, QuorumCertificate, VOTE_PAYLOAD_TYPE_ID, VOTE_TYPE_ID, encode_proposal,
     encode_quorum_certificate, encode_vote,
 };
 use canonical_encoding::{
@@ -40,12 +40,15 @@ const COMMITTED_LIST_TYPE_ID: u16 = 0xD016;
 pub(crate) const MAX_CERTIFICATE_VOTES: usize = 10_000;
 /// Bounds on the persisted [`ConsensusState`] canonical wire frame
 /// (`0xD010`-`0xD016`), chosen generously relative to what
-/// [`ChainedHotStuff::prune_state`] ever actually retains
-/// (`RETAIN_COMMITTED_HEIGHTS` = 2, `MAX_FUTURE_VIEW_GAP` = 64) so that
+/// [`ChainedHotStuff::prune_state`] ever actually retains after
+/// protected-root and bounded speculative admission (DR-0293/DR-0294;
+/// `RETAIN_COMMITTED_HEIGHTS` = 2, `MAX_FUTURE_VIEW_GAP` = 64, plus
+/// explicit speculative bodyless-QC count/byte budgets) so that
 /// legitimate pruned states never approach the bound while corrupted or
-/// adversarial input is still rejected before unbounded allocation.
-const MAX_STATE_KNOWN_PROPOSALS: usize = 4_096;
-const MAX_STATE_CERTIFICATES: usize = 4_096;
+/// adversarial input is still rejected before unbounded allocation. The
+/// codec count/byte caps themselves are unchanged.
+pub(crate) const MAX_STATE_KNOWN_PROPOSALS: usize = 4_096;
+pub(crate) const MAX_STATE_CERTIFICATES: usize = 4_096;
 const MAX_STATE_PENDING_VOTE_GROUPS: usize = 4_096;
 const MAX_STATE_VOTES_PER_GROUP: usize = 10_000;
 const MAX_STATE_OBSERVED_VOTES: usize = 8_192;
@@ -72,7 +75,7 @@ pub const MAX_ENCODED_CERTIFICATE_BYTES: usize = 8 * 1024 * 1024;
 /// canonical parsing. This is not a universal encoder limit or proof of
 /// signature, leader eligibility, context, or justify-certificate authority.
 pub const MAX_ENCODED_PROPOSAL_BYTES: usize = 10 * 1024 * 1024;
-const MAX_ENCODED_CONSENSUS_STATE_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_ENCODED_CONSENSUS_STATE_BYTES: usize = 16 * 1024 * 1024;
 /// Bound on the `votes` slice a caller may pass to
 /// [`ChainedHotStuff::certificate_from_votes`], checked before any
 /// signature verification. Double [`MAX_CERTIFICATE_VOTES`] to tolerate
@@ -397,6 +400,42 @@ fn encode_known_proposals_budgeted(
         canonical.field_bytes(proposal_field, proposal_bytes)?;
     }
     Ok(canonical.finish()?)
+}
+
+/// Incremental `0xD011` entry cost for one optional speculative proposal:
+/// two field headers plus the digest and proposal payloads. Used by
+/// [`ChainedHotStuff::prune_state`] to charge admitted speculation against
+/// the remaining shared encoded-state budget without re-encoding protected
+/// material.
+pub(crate) fn encoded_known_proposal_entry_bytes(
+    digest: &Digest32,
+    proposal: &ConsensusProposal,
+) -> Result<usize, ConsensusError> {
+    let digest_bytes = encode_digest32(digest)?;
+    let proposal_bytes = encode_proposal(proposal)?;
+    digest_bytes
+        .len()
+        .checked_add(proposal_bytes.len())
+        .and_then(|payload| payload.checked_add(CANONICAL_FIELD_HEADER_BYTES))
+        .and_then(|payload| payload.checked_add(CANONICAL_FIELD_HEADER_BYTES))
+        .ok_or(ConsensusError::ArithmeticOverflow)
+}
+
+/// Incremental `0xD012` entry cost for one optional speculative bodyless
+/// quorum certificate: two field headers plus the digest and certificate
+/// payloads (DR-0294).
+pub(crate) fn encoded_certificate_entry_bytes(
+    digest: &Digest32,
+    certificate: &QuorumCertificate,
+) -> Result<usize, ConsensusError> {
+    let digest_bytes = encode_digest32(digest)?;
+    let certificate_bytes = encode_quorum_certificate(certificate)?;
+    digest_bytes
+        .len()
+        .checked_add(certificate_bytes.len())
+        .and_then(|payload| payload.checked_add(CANONICAL_FIELD_HEADER_BYTES))
+        .and_then(|payload| payload.checked_add(CANONICAL_FIELD_HEADER_BYTES))
+        .ok_or(ConsensusError::ArithmeticOverflow)
 }
 
 fn decode_known_proposals(
@@ -1278,11 +1317,13 @@ impl ChainedHotStuff {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_observed_proposal<V: ConsensusVerifier>(
         &self,
         state: &mut ConsensusState,
         proposal: ConsensusProposal,
         verifier: &V,
+        outbound: &mut Vec<ConsensusMessage>,
         committed: &mut Vec<CommittedBlock>,
         committed_proofs: &mut Vec<CommittedBlockProof>,
     ) -> Result<(), ConsensusError> {
@@ -1306,6 +1347,9 @@ impl ChainedHotStuff {
         )?;
         if let Some(certificate) = state.certificates.get(&digest).cloned() {
             self.apply_certificate(state, certificate, verifier, committed, committed_proofs)?;
+        } else if let Some(qc) = self.try_form_certificate(state, digest)? {
+            self.apply_certificate(state, qc.clone(), verifier, committed, committed_proofs)?;
+            outbound.push(ConsensusMessage::Certificate(qc));
         }
         Ok(())
     }
@@ -1317,11 +1361,11 @@ impl ChainedHotStuff {
     ///
     /// This never appends to `last_voted_view`/`last_voted_digest` and
     /// never emits a [`crate::ConsensusMessage::Vote`]: a [`ConsensusEvent::Proposal`]
-    /// only records the proposal and applies its justify/known certificate,
-    /// exactly like the existing-certificate fast path in
-    /// `process_proposal`, preserving the same lock/high-QC/commit/prune
-    /// semantics as [`crate::ConsensusEngine::on_event`], and additionally
-    /// bounds the proposal's future-view gap (the authenticated event
+    /// records the proposal, applies its justify/known certificate, and if
+    /// no QC is stored retries certificate formation for that digest,
+    /// applying and emitting `Certificate` only (DR-0293).
+    /// Lock/high-QC/commit/prune follow [`crate::ConsensusEngine::on_event`],
+    /// and the proposal's future-view gap is bounded (the authenticated event
     /// stream is still untrusted transport, not yet-trusted local state). A
     /// [`ConsensusEvent::Vote`] is aggregated exactly as in `on_event`
     /// (useful for building a certificate from independently observed
@@ -1347,6 +1391,7 @@ impl ChainedHotStuff {
                     &mut next,
                     proposal,
                     verifier,
+                    &mut outbound,
                     &mut committed,
                     &mut committed_proofs,
                 )?;
@@ -1376,7 +1421,7 @@ impl ChainedHotStuff {
         // certificate maps strictly before the `prune_state` call below, so
         // every embedded ancestor proposal/certificate is still guaranteed
         // present at the moment each proof is built (DR-0169).
-        self.prune_state(&mut next);
+        self.prune_state(&mut next)?;
         Ok(ConsensusOutput {
             state: next,
             outbound_messages: outbound,
@@ -1412,13 +1457,12 @@ impl ChainedHotStuff {
     ///
     /// Limitation: this cannot recover a *local* binding between
     /// `last_voted_view`/`last_voted_digest` and this validator's own entry
-    /// in `observed_votes`, because [`ChainedHotStuff::prune_state`] may
-    /// have already dropped the old vote/proposal it referred to (pruning
-    /// only ever retains `high_qc`/`locked_qc` unconditionally, not an
-    /// arbitrary last-voted digest). Reconstructing that specific
-    /// still-safe-to-vote invariant after a restart, if ever needed,
-    /// belongs in the caller that owns local identity (e.g. `node-core`),
-    /// not in this crate.
+    /// in `observed_votes`, because the observed-vote age window may already
+    /// have dropped that entry. The last-voted proposal body itself is
+    /// retained as a protected root (DR-0293). Reconstructing the
+    /// still-safe-to-vote observed-vote invariant after a restart, if ever
+    /// needed, belongs in the caller that owns local identity (e.g.
+    /// `node-core`), not in this crate.
     pub fn validate_state<V: ConsensusVerifier>(
         &self,
         state: &ConsensusState,

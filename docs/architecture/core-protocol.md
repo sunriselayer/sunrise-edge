@@ -41,7 +41,13 @@ Sunrise Edge is designed as a deterministic state-transition system over authent
 - `validator-set`: immutable epoch membership, public keys, explicit voting
   power, quorum calculation, and validator-set commitments.
 - `consensus`: canonical proposal/vote/certificate types and the event-driven
-  shared-object chained-HotStuff state machine.
+  shared-object chained-HotStuff state machine. Persisted `0xD010` v1 bytes
+  are unchanged; [DR-0293](decisions/0293-bounded-consensus-observer-retention.md)
+  bounds speculative observer proposal bodies and retries certificate
+  formation when a restored body meets already-collected quorum votes.
+  [DR-0294](decisions/0294-bounded-quorum-certificate-retention.md) bounds
+  speculative retained certificates after an authorized event without a
+  certificate future-view fence.
 - `node-core`: bounded node-event ingress, replay-context validation, pure
   application transition dispatch, and conditional state persistence.
 - `protocol-upgrades`: canonical feature flags, hash-suite schedules, protocol-version transitions, and lazy-migration descriptors.

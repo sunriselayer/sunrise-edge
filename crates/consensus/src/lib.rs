@@ -95,6 +95,14 @@ const MAX_SIGNATURE_BYTES: usize = 4096;
 pub(crate) const MAX_BLOCK_TRANSACTIONS_LIMIT: u32 = 16_384;
 const MAX_FUTURE_VIEW_GAP: u64 = 64;
 const RETAIN_COMMITTED_HEIGHTS: u64 = 2;
+/// Finite unprotected speculative proposal count admitted after protected
+/// roots. Newest-view-first, independent of arrival order (DR-0293).
+const MAX_SPECULATIVE_PROPOSALS: usize = MAX_FUTURE_VIEW_GAP as usize;
+/// Finite unprotected speculative bodyless-QC count admitted after
+/// high/lock/last-voted/ancestry certificates. Newest-view-first, independent
+/// of arrival order. This is a count budget, not a future-view fence
+/// (DR-0294).
+pub(crate) const MAX_SPECULATIVE_BODYLESS_CERTIFICATES: usize = MAX_FUTURE_VIEW_GAP as usize;
 
 /// Stable identifier for the canonical consensus protocol.
 #[repr(u16)]
@@ -1302,6 +1310,12 @@ impl ChainedHotStuff {
         if certificate.view == 0 {
             return Ok(());
         }
+        // Authenticated certificates are not future-view fenced here. A
+        // far-ahead QC may still update `high_qc` / `current_view`; shared
+        // `prune_state` then applies the speculative bodyless-QC count and
+        // byte budgets (DR-0294). A view fence would reject honest catch-up
+        // and would not bound sequential same-height QCs that advance
+        // `current_view` one step at a time.
         state
             .certificates
             .entry(certificate.proposal_digest)
@@ -1523,15 +1537,12 @@ impl ChainedHotStuff {
         Ok(())
     }
 
-    pub(crate) fn prune_state(&self, state: &mut ConsensusState) {
+    pub(crate) fn prune_state(&self, state: &mut ConsensusState) -> Result<(), ConsensusError> {
         let minimum_height = state
             .committed_height
             .saturating_sub(RETAIN_COMMITTED_HEIGHTS);
         let high = state.high_qc.proposal_digest;
         let locked = state.locked_qc.proposal_digest;
-        state.known_proposals.retain(|digest, proposal| {
-            proposal.height >= minimum_height || *digest == high || *digest == locked
-        });
         state.certificates.retain(|digest, certificate| {
             certificate.height >= minimum_height || *digest == high || *digest == locked
         });
@@ -1546,9 +1557,181 @@ impl ChainedHotStuff {
         state
             .observed_votes
             .retain(|(_, view), _| view.saturating_add(MAX_FUTURE_VIEW_GAP) >= state.current_view);
+
+        let safety_digests = safety_protected_proposal_digests(state, minimum_height);
+        let original_certificates = state.certificates.clone();
+        let mut retained_certificates = BTreeMap::new();
+        let mut speculative_certificates: BTreeMap<Digest32, QuorumCertificate> = BTreeMap::new();
+        for (digest, certificate) in &original_certificates {
+            if *digest == high
+                || *digest == locked
+                || state.last_voted_digest == Some(*digest)
+                || safety_digests.contains(digest)
+            {
+                retained_certificates.insert(*digest, certificate.clone());
+            } else {
+                speculative_certificates.insert(*digest, certificate.clone());
+            }
+        }
+        if retained_certificates.len() > durable::MAX_STATE_CERTIFICATES {
+            return Err(ConsensusError::StateCollectionTooLarge {
+                field: "certificates",
+                actual: retained_certificates.len(),
+                max: durable::MAX_STATE_CERTIFICATES,
+            });
+        }
+
+        let mut protected_map = BTreeMap::new();
+        for digest in &safety_digests {
+            if let Some(proposal) = state.known_proposals.get(digest) {
+                protected_map.insert(*digest, proposal.clone());
+            }
+        }
+        if protected_map.len() > durable::MAX_STATE_KNOWN_PROPOSALS {
+            return Err(ConsensusError::StateCollectionTooLarge {
+                field: "known_proposals",
+                actual: protected_map.len(),
+                max: durable::MAX_STATE_KNOWN_PROPOSALS,
+            });
+        }
+        let protected_state = ConsensusState {
+            current_view: state.current_view,
+            view_deadline_unix_millis: state.view_deadline_unix_millis,
+            last_voted_view: state.last_voted_view,
+            last_voted_digest: state.last_voted_digest,
+            high_qc: state.high_qc.clone(),
+            locked_qc: state.locked_qc.clone(),
+            committed_height: state.committed_height,
+            known_proposals: protected_map.clone(),
+            certificates: retained_certificates.clone(),
+            pending_votes: state.pending_votes.clone(),
+            observed_votes: state.observed_votes.clone(),
+            committed: state
+                .committed
+                .iter()
+                .copied()
+                .filter(|digest| protected_map.contains_key(digest))
+                .collect(),
+        };
+        let protected_encoded = encode_consensus_state(&protected_state)?;
+        let mut remaining = durable::MAX_ENCODED_CONSENSUS_STATE_BYTES
+            .checked_sub(protected_encoded.len())
+            .ok_or(ConsensusError::ArithmeticOverflow)?;
+
+        remaining = admit_speculative_bodyless_certificates(
+            &speculative_certificates,
+            &state.known_proposals,
+            &mut protected_map,
+            &mut retained_certificates,
+            minimum_height,
+            remaining,
+        )?;
+        state.certificates = retained_certificates;
+
+        let protected_digests = protected_proposal_digests(state, minimum_height);
+        for digest in &protected_digests {
+            if protected_map.contains_key(digest) {
+                continue;
+            }
+            let Some(proposal) = state.known_proposals.get(digest) else {
+                continue;
+            };
+            if protected_map.len() >= durable::MAX_STATE_KNOWN_PROPOSALS {
+                return Err(ConsensusError::StateCollectionTooLarge {
+                    field: "known_proposals",
+                    actual: protected_map
+                        .len()
+                        .checked_add(1)
+                        .ok_or(ConsensusError::ArithmeticOverflow)?,
+                    max: durable::MAX_STATE_KNOWN_PROPOSALS,
+                });
+            }
+            let cost = durable::encoded_known_proposal_entry_bytes(digest, proposal)?;
+            if cost > remaining {
+                return Err(ConsensusError::EncodedFrameTooLarge {
+                    kind: "known_proposals",
+                    actual: remaining
+                        .checked_add(cost)
+                        .ok_or(ConsensusError::ArithmeticOverflow)?,
+                    max: durable::MAX_ENCODED_CONSENSUS_STATE_BYTES,
+                });
+            }
+            remaining = remaining
+                .checked_sub(cost)
+                .ok_or(ConsensusError::ArithmeticOverflow)?;
+            protected_map.insert(*digest, proposal.clone());
+        }
+
+        let mut representatives: BTreeMap<(u64, ValidatorId), Digest32> = BTreeMap::new();
+        for (digest, proposal) in &state.known_proposals {
+            if protected_digests.contains(digest) || protected_map.contains_key(digest) {
+                continue;
+            }
+            if proposal.height < minimum_height
+                || proposal.view.saturating_add(MAX_FUTURE_VIEW_GAP) < state.current_view
+            {
+                continue;
+            }
+            match representatives.entry((proposal.view, proposal.leader)) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(*digest);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if *digest < *entry.get() {
+                        entry.insert(*digest);
+                    }
+                }
+            }
+        }
+        let mut ranked: Vec<(u64, ValidatorId, Digest32)> = representatives
+            .into_iter()
+            .map(|((view, leader), digest)| (view, leader, digest))
+            .collect();
+        ranked.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.cmp(&right.2))
+        });
+
+        let mut speculative_count = 0usize;
+        for (_view, _leader, digest) in ranked {
+            if speculative_count >= MAX_SPECULATIVE_PROPOSALS
+                || protected_map.len() >= durable::MAX_STATE_KNOWN_PROPOSALS
+            {
+                break;
+            }
+            let Some(proposal) = state.known_proposals.get(&digest) else {
+                continue;
+            };
+            let cost = durable::encoded_known_proposal_entry_bytes(&digest, proposal)?;
+            if cost > remaining {
+                continue;
+            }
+            remaining = remaining
+                .checked_sub(cost)
+                .ok_or(ConsensusError::ArithmeticOverflow)?;
+            protected_map.insert(digest, proposal.clone());
+            speculative_count = speculative_count
+                .checked_add(1)
+                .ok_or(ConsensusError::ArithmeticOverflow)?;
+        }
+
+        let _remaining = attach_certificates_for_retained_bodies(
+            &original_certificates,
+            &state.known_proposals,
+            &protected_map,
+            &mut state.certificates,
+            minimum_height,
+            remaining,
+        )?;
+
+        state.known_proposals = protected_map;
         state
             .committed
             .retain(|digest| state.known_proposals.contains_key(digest));
+        Ok(())
     }
 
     fn signature_frame(
@@ -1675,7 +1858,7 @@ impl ConsensusEngine for ChainedHotStuff {
         // certificate maps strictly before the `prune_state` call below, so
         // every embedded ancestor proposal/certificate is still guaranteed
         // present at the moment each proof is built (DR-0169).
-        self.prune_state(&mut next);
+        self.prune_state(&mut next)?;
         Ok(ConsensusOutput {
             state: next,
             outbound_messages: outbound,
@@ -1684,6 +1867,197 @@ impl ConsensusEngine for ChainedHotStuff {
             view_advanced,
         })
     }
+}
+
+/// Safety-protected proposal roots: high/lock QCs, last-voted, committed
+/// tip inside the two-height window, and the available parent walk that
+/// connects those roots down to the committed retention boundary. This
+/// set does not treat every retained certificate as a pin (DR-0294
+/// bodyless-QC bound). Missing referenced roots stay named so a later
+/// body arrival is protected. The walk stops at the committed height
+/// window rather than genesis or an arbitrary 64-step ancestor cap.
+fn safety_protected_proposal_digests(
+    state: &ConsensusState,
+    minimum_height: u64,
+) -> BTreeSet<Digest32> {
+    let mut roots = BTreeSet::new();
+    roots.insert(state.high_qc.proposal_digest);
+    roots.insert(state.locked_qc.proposal_digest);
+    if let Some(digest) = state.last_voted_digest {
+        roots.insert(digest);
+    }
+    roots.extend(state.committed.iter().copied().filter(|digest| {
+        state
+            .known_proposals
+            .get(digest)
+            .is_some_and(|proposal| proposal.height >= minimum_height)
+    }));
+    walk_protected_proposal_ancestry(&state.known_proposals, minimum_height, roots)
+}
+
+/// Digests whose bodies must survive speculative eviction: safety roots
+/// plus currently retained certificates (already count/byte bounded).
+/// Partial pending votes do not pin speculation.
+fn protected_proposal_digests(state: &ConsensusState, minimum_height: u64) -> BTreeSet<Digest32> {
+    let mut roots = safety_protected_proposal_digests(state, minimum_height);
+    roots.extend(state.certificates.keys().copied());
+    walk_protected_proposal_ancestry(&state.known_proposals, minimum_height, roots)
+}
+
+fn walk_protected_proposal_ancestry(
+    known_proposals: &BTreeMap<Digest32, ConsensusProposal>,
+    minimum_height: u64,
+    roots: BTreeSet<Digest32>,
+) -> BTreeSet<Digest32> {
+    let mut protected = BTreeSet::new();
+    for root in roots {
+        let mut cursor = root;
+        loop {
+            if !protected.insert(cursor) {
+                break;
+            }
+            let Some(proposal) = known_proposals.get(&cursor) else {
+                break;
+            };
+            if proposal.height <= minimum_height {
+                break;
+            }
+            cursor = proposal.justify.proposal_digest;
+        }
+    }
+    protected
+}
+
+/// Admits unprotected QCs newest-view-first with canonical minimum digest
+/// per view, an explicit count budget, and the remaining encoded-state
+/// byte budget. Bodyless entries are charged the QC only; when a body is
+/// available, its available ancestry is pinned and charged with the QC.
+/// Not a future-view fence.
+fn admit_speculative_bodyless_certificates(
+    candidates: &BTreeMap<Digest32, QuorumCertificate>,
+    known_proposals: &BTreeMap<Digest32, ConsensusProposal>,
+    protected_map: &mut BTreeMap<Digest32, ConsensusProposal>,
+    retained: &mut BTreeMap<Digest32, QuorumCertificate>,
+    minimum_height: u64,
+    mut remaining: usize,
+) -> Result<usize, ConsensusError> {
+    let mut representatives: BTreeMap<u64, Digest32> = BTreeMap::new();
+    for (digest, certificate) in candidates {
+        match representatives.entry(certificate.view) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(*digest);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if *digest < *entry.get() {
+                    entry.insert(*digest);
+                }
+            }
+        }
+    }
+    let mut ranked: Vec<(u64, Digest32)> = representatives.into_iter().collect();
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+
+    let mut speculative_count = 0usize;
+    for (_view, digest) in ranked {
+        if speculative_count >= MAX_SPECULATIVE_BODYLESS_CERTIFICATES
+            || retained.len() >= durable::MAX_STATE_CERTIFICATES
+        {
+            break;
+        }
+        let Some(certificate) = candidates.get(&digest) else {
+            continue;
+        };
+        let mut cost = durable::encoded_certificate_entry_bytes(&digest, certificate)?;
+        let ancestry = walk_protected_proposal_ancestry(
+            known_proposals,
+            minimum_height,
+            BTreeSet::from([digest]),
+        );
+        let mut new_bodies = 0usize;
+        for ancestor in &ancestry {
+            if protected_map.contains_key(ancestor) {
+                continue;
+            }
+            let Some(proposal) = known_proposals.get(ancestor) else {
+                continue;
+            };
+            new_bodies = new_bodies
+                .checked_add(1)
+                .ok_or(ConsensusError::ArithmeticOverflow)?;
+            cost = cost
+                .checked_add(durable::encoded_known_proposal_entry_bytes(
+                    ancestor, proposal,
+                )?)
+                .ok_or(ConsensusError::ArithmeticOverflow)?;
+        }
+        if protected_map
+            .len()
+            .checked_add(new_bodies)
+            .ok_or(ConsensusError::ArithmeticOverflow)?
+            > durable::MAX_STATE_KNOWN_PROPOSALS
+            || cost > remaining
+        {
+            continue;
+        }
+        remaining = remaining
+            .checked_sub(cost)
+            .ok_or(ConsensusError::ArithmeticOverflow)?;
+        for ancestor in ancestry {
+            if let Some(proposal) = known_proposals.get(&ancestor) {
+                protected_map
+                    .entry(ancestor)
+                    .or_insert_with(|| proposal.clone());
+            }
+        }
+        retained.insert(digest, certificate.clone());
+        speculative_count = speculative_count
+            .checked_add(1)
+            .ok_or(ConsensusError::ArithmeticOverflow)?;
+    }
+    Ok(remaining)
+}
+
+/// Reattaches a QC for an admitted speculative or protected body when the
+/// entry still fits the remaining encode budget. A body may be kept without
+/// its QC; late certificate redelivery restores it.
+fn attach_certificates_for_retained_bodies(
+    original_certificates: &BTreeMap<Digest32, QuorumCertificate>,
+    known_proposals: &BTreeMap<Digest32, ConsensusProposal>,
+    retained_bodies: &BTreeMap<Digest32, ConsensusProposal>,
+    retained_certificates: &mut BTreeMap<Digest32, QuorumCertificate>,
+    minimum_height: u64,
+    mut remaining: usize,
+) -> Result<usize, ConsensusError> {
+    for digest in retained_bodies.keys() {
+        if retained_certificates.contains_key(digest) {
+            continue;
+        }
+        let Some(certificate) = original_certificates.get(digest) else {
+            continue;
+        };
+        let ancestry = walk_protected_proposal_ancestry(
+            known_proposals,
+            minimum_height,
+            BTreeSet::from([*digest]),
+        );
+        if ancestry.iter().any(|ancestor| {
+            known_proposals.contains_key(ancestor) && !retained_bodies.contains_key(ancestor)
+        }) {
+            continue;
+        }
+        if retained_certificates.len() >= durable::MAX_STATE_CERTIFICATES {
+            break;
+        }
+        let cost = durable::encoded_certificate_entry_bytes(digest, certificate)?;
+        if cost > remaining {
+            continue;
+        }
+        remaining = remaining
+            .checked_sub(cost)
+            .ok_or(ConsensusError::ArithmeticOverflow)?;
+        retained_certificates.insert(*digest, certificate.clone());
+    }
+    Ok(remaining)
 }
 
 fn validate_signature_length(signature: &[u8]) -> Result<(), ConsensusError> {
@@ -1796,7 +2170,9 @@ pub fn encode_quorum_certificate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{certify, proposal_votes, setup};
+    use crate::test_support::{
+        certify, proposal_votes, setup, signed_proposal, transaction_digest,
+    };
     use protocol_types::HashAlgorithmId;
 
     #[test]
@@ -2089,5 +2465,55 @@ mod tests {
                 "0300080000001027000000000000"
             )
         );
+    }
+
+    #[test]
+    fn last_voted_body_is_protected_for_exact_proposal_replay() {
+        let (engine, cryptos) = setup();
+        let genesis = engine.genesis_state(0);
+        let voted = signed_proposal(&engine, &cryptos, vec![transaction_digest(9)]);
+        let smaller = signed_proposal(&engine, &cryptos, vec![transaction_digest(1)]);
+        let voted_digest = engine.proposal_digest(&voted).unwrap();
+        let smaller_digest = engine.proposal_digest(&smaller).unwrap();
+        assert!(smaller_digest < voted_digest);
+
+        let voted_output = engine
+            .on_event(
+                &genesis,
+                ConsensusEvent::Proposal(voted.clone()),
+                &cryptos[1],
+                &cryptos[1],
+            )
+            .unwrap();
+        assert_eq!(voted_output.state.last_voted_digest, Some(voted_digest));
+        assert!(
+            voted_output
+                .state
+                .known_proposals
+                .contains_key(&voted_digest)
+        );
+
+        let flooded = engine
+            .on_observer_event(
+                &voted_output.state,
+                ConsensusEvent::Proposal(smaller),
+                &cryptos[0],
+            )
+            .unwrap();
+        assert_eq!(flooded.state.last_voted_digest, Some(voted_digest));
+        assert!(flooded.state.known_proposals.contains_key(&voted_digest));
+        assert!(flooded.state.known_proposals.contains_key(&smaller_digest));
+
+        let replayed = engine
+            .on_event(
+                &flooded.state,
+                ConsensusEvent::Proposal(voted),
+                &cryptos[1],
+                &cryptos[1],
+            )
+            .unwrap();
+        assert!(replayed.outbound_messages.is_empty());
+        assert_eq!(replayed.state.last_voted_digest, Some(voted_digest));
+        assert!(replayed.state.known_proposals.contains_key(&voted_digest));
     }
 }

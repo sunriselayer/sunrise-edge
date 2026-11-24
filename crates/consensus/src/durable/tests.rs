@@ -1,10 +1,17 @@
 use super::*;
-use crate::test_support::{certify, proposal_votes, setup};
-use crate::{
-    ConsensusEngine, ConsensusEvent, ConsensusMessage, ConsensusProposal, ConsensusVote,
-    QuorumCertificate,
+use crate::MAX_SPECULATIVE_BODYLESS_CERTIFICATES;
+use crate::test_support::{
+    certify, leader_crypto, proposal_votes, setup, signed_proposal, signed_proposal_at_view,
+    transaction_digest,
 };
-use protocol_types::{ChainId, HashAlgorithmId, ProtocolVersion, ValidatorId};
+use crate::{
+    ChainedHotStuff, ConsensusEngine, ConsensusEvent, ConsensusMessage, ConsensusProposal,
+    ConsensusState, ConsensusVote, QuorumCertificate, admit_speculative_bodyless_certificates,
+    attach_certificates_for_retained_bodies,
+};
+use protocol_types::{
+    ChainId, Epoch, HashAlgorithmId, ProtocolVersion, SignatureSchemeId, ValidatorId,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn hex(bytes: &[u8]) -> String {
@@ -807,4 +814,738 @@ fn proposal_above_literal_byte_cap_refuses_before_canonical_decoding() {
             max: 10_485_760,
         })
     );
+}
+
+fn observe_proposal(
+    engine: &ChainedHotStuff,
+    state: ConsensusState,
+    proposal: ConsensusProposal,
+    verifier: &crate::test_support::TestCrypto,
+) -> ConsensusState {
+    engine
+        .on_observer_event(&state, ConsensusEvent::Proposal(proposal), verifier)
+        .unwrap()
+        .state
+}
+
+#[test]
+fn observer_same_leader_view_equivocations_keep_one_min_digest_body() {
+    let (engine, cryptos) = setup();
+    let genesis = engine.genesis_state(0);
+    let mut proposals = Vec::new();
+    let mut min_digest = None;
+    for index in 0..=4_096u16 {
+        let proposal = signed_proposal(&engine, &cryptos, vec![transaction_digest(index)]);
+        let digest = engine.proposal_digest(&proposal).unwrap();
+        min_digest = Some(match min_digest {
+            None => digest,
+            Some(current) if digest < current => digest,
+            Some(current) => current,
+        });
+        proposals.push(proposal);
+    }
+    let min_digest = min_digest.unwrap();
+
+    let mut forward = genesis.clone();
+    for proposal in &proposals {
+        forward = observe_proposal(&engine, forward, proposal.clone(), &cryptos[0]);
+        assert!(
+            forward.known_proposals.len() <= 2,
+            "same-leader/view speculation must not accumulate toward the 4096 codec cap"
+        );
+        encode_consensus_state(&forward).unwrap();
+    }
+    assert_eq!(forward.known_proposals.len(), 1);
+    assert!(forward.known_proposals.contains_key(&min_digest));
+
+    let mut reverse = genesis.clone();
+    for proposal in proposals.iter().rev() {
+        reverse = observe_proposal(&engine, reverse, proposal.clone(), &cryptos[0]);
+    }
+    assert_eq!(
+        reverse.known_proposals.keys().copied().collect::<Vec<_>>(),
+        {
+            let mut keys: Vec<_> = forward.known_proposals.keys().copied().collect();
+            keys.sort();
+            keys
+        }
+    );
+    assert_eq!(reverse.known_proposals, forward.known_proposals);
+
+    let restarted = decode_consensus_state(&encode_consensus_state(&forward).unwrap()).unwrap();
+    assert_eq!(restarted, forward);
+    let min_proposal = proposals
+        .into_iter()
+        .find(|proposal| engine.proposal_digest(proposal).unwrap() == min_digest)
+        .unwrap();
+    let after_restart = observe_proposal(&engine, restarted, min_proposal, &cryptos[0]);
+    assert_eq!(after_restart.known_proposals.len(), 1);
+    assert!(after_restart.known_proposals.contains_key(&min_digest));
+}
+
+#[test]
+fn observer_distinct_view_speculation_is_count_and_byte_bounded() {
+    let (engine, cryptos) = setup();
+    let genesis = engine.genesis_state(0);
+    let bulky: Vec<Digest32> = (0..1_024u16).map(transaction_digest).collect();
+    let mut state = genesis;
+    let mut distinct_views = BTreeSet::new();
+    for view in 1..=65u64 {
+        let proposal = signed_proposal_at_view(&engine, &cryptos, view, bulky.clone());
+        distinct_views.insert(view);
+        state = observe_proposal(&engine, state, proposal, &cryptos[0]);
+        let encoded = encode_consensus_state(&state).unwrap();
+        assert!(encoded.len() <= MAX_ENCODED_CONSENSUS_STATE_BYTES);
+        assert!(state.known_proposals.len() <= 64);
+    }
+    assert_eq!(distinct_views.len(), 65);
+    assert!(state.known_proposals.len() <= 64);
+    assert!(
+        state
+            .known_proposals
+            .values()
+            .all(|proposal| proposal.view >= 2),
+        "oldest view-1 speculation is dropped once the speculative count cap is filled newest-first"
+    );
+    let encoded = encode_consensus_state(&state).unwrap();
+    assert!(encoded.len() <= MAX_ENCODED_CONSENSUS_STATE_BYTES);
+}
+
+#[test]
+fn observer_speculative_bytes_are_bounded_before_the_count_cap() {
+    let (mut engine, cryptos) = setup();
+    engine.parameters.max_block_transactions = MAX_BLOCK_TRANSACTIONS_LIMIT;
+    engine.parameters.validate().unwrap();
+    let bulky: Vec<Digest32> = (0..16_384u16).map(transaction_digest).collect();
+    let mut state = engine.genesis_state(0);
+    let mut unbounded_bytes = encode_consensus_state(&state).unwrap().len();
+    for view in 1..=32 {
+        let proposal = signed_proposal_at_view(&engine, &cryptos, view, bulky.clone());
+        let digest = engine.proposal_digest(&proposal).unwrap();
+        unbounded_bytes += encoded_known_proposal_entry_bytes(&digest, &proposal).unwrap();
+        state = observe_proposal(&engine, state, proposal, &cryptos[0]);
+        assert!(encode_consensus_state(&state).unwrap().len() <= 16 * 1024 * 1024);
+    }
+    assert!(unbounded_bytes > 16 * 1024 * 1024);
+    assert!(state.known_proposals.len() < 32);
+    engine.validate_state(&state, &cryptos[0]).unwrap();
+}
+
+#[test]
+fn saturated_v1_state_round_trips_then_compacts_on_the_next_authorized_event() {
+    let (engine, cryptos) = setup();
+    let genesis = engine.genesis_state(0);
+    let mut saturated = genesis.clone();
+    for index in 0..4_096u32 {
+        let mut transaction = [0xA5; 32];
+        transaction[..4].copy_from_slice(&index.to_le_bytes());
+        let proposal = engine
+            .propose(
+                &genesis,
+                vec![Digest32::new(HashAlgorithmId::Sha2_256, transaction)],
+                &cryptos[0],
+            )
+            .unwrap();
+        saturated
+            .known_proposals
+            .insert(engine.proposal_digest(&proposal).unwrap(), proposal);
+    }
+    assert_eq!(saturated.known_proposals.len(), 4_096);
+    let encoded = encode_consensus_state(&saturated).unwrap();
+    let restored = decode_consensus_state(&encoded).unwrap();
+    engine.validate_state(&restored, &cryptos[0]).unwrap();
+    assert_eq!(restored, saturated);
+    assert_eq!(encode_consensus_state(&restored).unwrap(), encoded);
+
+    let live = signed_proposal(
+        &engine,
+        &cryptos,
+        vec![Digest32::new(HashAlgorithmId::Sha2_256, [0xF3; 32])],
+    );
+    let compacted = observe_proposal(&engine, restored, live, &cryptos[0]);
+    assert!(compacted.known_proposals.len() < MAX_STATE_KNOWN_PROPOSALS);
+    assert!(compacted.known_proposals.len() <= 64);
+    encode_consensus_state(&compacted).unwrap();
+}
+
+#[test]
+fn observer_forms_qc_for_restored_body_after_pending_votes_and_eviction() {
+    let (engine, cryptos) = setup();
+    let mut competing = signed_proposal(&engine, &cryptos, vec![transaction_digest(2)]);
+    let mut smaller = signed_proposal(&engine, &cryptos, vec![transaction_digest(1)]);
+    if engine.proposal_digest(&competing).unwrap() < engine.proposal_digest(&smaller).unwrap() {
+        std::mem::swap(&mut competing, &mut smaller);
+    }
+    let competing_digest = engine.proposal_digest(&competing).unwrap();
+    let smaller_digest = engine.proposal_digest(&smaller).unwrap();
+    assert!(smaller_digest < competing_digest);
+
+    let genesis = engine.genesis_state(0);
+    let mut observer = observe_proposal(&engine, genesis.clone(), smaller.clone(), &cryptos[0]);
+    observer = observe_proposal(&engine, observer, competing.clone(), &cryptos[0]);
+    assert!(observer.known_proposals.contains_key(&smaller_digest));
+    assert!(
+        !observer.known_proposals.contains_key(&competing_digest),
+        "larger-digest same-view equivocation is dropped as unprotected speculation"
+    );
+
+    let mut votes = Vec::new();
+    for crypto in &cryptos {
+        let vote_output = engine
+            .on_event(
+                &genesis,
+                ConsensusEvent::Proposal(competing.clone()),
+                crypto,
+                crypto,
+            )
+            .unwrap();
+        let ConsensusMessage::Vote(vote) = vote_output.outbound_messages[0].clone() else {
+            panic!("fresh process_proposal must emit a vote");
+        };
+        votes.push(vote);
+    }
+    for vote in votes.iter().take(3) {
+        observer = engine
+            .on_observer_event(&observer, ConsensusEvent::Vote(vote.clone()), &cryptos[0])
+            .unwrap()
+            .state;
+    }
+    assert!(!observer.certificates.contains_key(&competing_digest));
+    assert!(observer.pending_votes.contains_key(&competing_digest));
+
+    let restored = engine
+        .on_observer_event(
+            &observer,
+            ConsensusEvent::Proposal(competing.clone()),
+            &cryptos[0],
+        )
+        .unwrap();
+    assert!(
+        restored
+            .outbound_messages
+            .iter()
+            .any(|message| matches!(message, ConsensusMessage::Certificate(qc) if qc.proposal_digest == competing_digest))
+    );
+    assert!(restored.state.certificates.contains_key(&competing_digest));
+    assert!(
+        restored
+            .state
+            .known_proposals
+            .contains_key(&competing_digest)
+    );
+}
+
+#[test]
+fn observer_reobserve_after_qc_for_evicted_body_advances_lock_commit_and_proof() {
+    let (engine, cryptos) = setup();
+    let mut honest = vec![engine.genesis_state(0); 4];
+    for byte in 1..=2u8 {
+        let (_, votes) = proposal_votes(&engine, &mut honest, &cryptos, byte);
+        let _ = certify(&engine, &mut honest, &cryptos, &votes);
+    }
+    assert_eq!(honest[0].committed_height, 0);
+    assert_eq!(honest[0].high_qc.height, 2);
+
+    let leader = crate::test_support::leader_crypto(&engine, &cryptos, honest[0].current_view);
+    let competing = engine
+        .propose(&honest[0], vec![transaction_digest(9)], leader)
+        .unwrap();
+    let smaller = engine
+        .propose(&honest[0], vec![transaction_digest(8)], leader)
+        .unwrap();
+    let competing_digest = engine.proposal_digest(&competing).unwrap();
+    let smaller_digest = engine.proposal_digest(&smaller).unwrap();
+    assert!(smaller_digest < competing_digest);
+
+    let mut observer = observe_proposal(&engine, honest[0].clone(), smaller, &cryptos[0]);
+    observer = observe_proposal(&engine, observer, competing.clone(), &cryptos[0]);
+    assert!(!observer.known_proposals.contains_key(&competing_digest));
+
+    let mut votes = Vec::new();
+    for crypto in &cryptos {
+        let output = engine
+            .on_event(
+                &honest[0],
+                ConsensusEvent::Proposal(competing.clone()),
+                crypto,
+                crypto,
+            )
+            .unwrap();
+        votes.push(match &output.outbound_messages[0] {
+            ConsensusMessage::Vote(vote) => vote.clone(),
+            other => panic!("expected vote, got {other:?}"),
+        });
+    }
+    let certificate = engine
+        .certificate_from_votes(&competing, &votes, &cryptos[0])
+        .unwrap()
+        .expect("quorum votes certify the evicted competing body");
+
+    let certified = engine
+        .on_observer_event(
+            &observer,
+            ConsensusEvent::Certificate(certificate),
+            &cryptos[0],
+        )
+        .unwrap();
+    assert_eq!(certified.state.high_qc.proposal_digest, competing_digest);
+    assert!(certified.committed_blocks.is_empty());
+    assert!(certified.committed_proofs.is_empty());
+    assert!(
+        !certified
+            .state
+            .known_proposals
+            .contains_key(&competing_digest)
+    );
+
+    let restored = engine
+        .on_observer_event(
+            &certified.state,
+            ConsensusEvent::Proposal(competing),
+            &cryptos[0],
+        )
+        .unwrap();
+    assert!(
+        restored
+            .state
+            .known_proposals
+            .contains_key(&competing_digest)
+    );
+    assert_eq!(restored.state.high_qc.proposal_digest, competing_digest);
+    assert!(restored.state.locked_qc.height > certified.state.locked_qc.height);
+    assert_eq!(restored.state.committed_height, 1);
+    assert_eq!(restored.committed_blocks.len(), 1);
+    assert_eq!(restored.committed_proofs.len(), 1);
+}
+
+fn isolated_certificate(
+    engine: &ChainedHotStuff,
+    cryptos: &[crate::test_support::TestCrypto],
+    voter_state: &ConsensusState,
+    proposal: &ConsensusProposal,
+) -> QuorumCertificate {
+    let mut votes = Vec::new();
+    for crypto in cryptos {
+        let output = engine
+            .on_event(
+                voter_state,
+                ConsensusEvent::Proposal(proposal.clone()),
+                crypto,
+                crypto,
+            )
+            .unwrap();
+        let ConsensusMessage::Vote(vote) = output.outbound_messages[0].clone() else {
+            panic!("isolated proposal must emit a vote");
+        };
+        votes.push(vote);
+    }
+    engine
+        .certificate_from_votes(proposal, &votes, &cryptos[0])
+        .unwrap()
+        .expect("three of four isolated votes certify")
+}
+
+fn ticked_state(
+    engine: &ChainedHotStuff,
+    cryptos: &[crate::test_support::TestCrypto],
+    view: u64,
+) -> ConsensusState {
+    let mut state = engine.genesis_state(0);
+    let ticker = &cryptos[0];
+    while state.current_view < view {
+        state = engine
+            .on_event(
+                &state,
+                ConsensusEvent::Tick {
+                    now_unix_millis: state.view_deadline_unix_millis,
+                },
+                ticker,
+                ticker,
+            )
+            .unwrap()
+            .state;
+    }
+    state
+}
+
+fn observe_certificate(
+    engine: &ChainedHotStuff,
+    state: ConsensusState,
+    certificate: QuorumCertificate,
+    verifier: &crate::test_support::TestCrypto,
+) -> ConsensusState {
+    engine
+        .on_observer_event(&state, ConsensusEvent::Certificate(certificate), verifier)
+        .unwrap()
+        .state
+}
+
+#[test]
+fn observer_same_view_bodyless_qcs_do_not_fill_the_persist_cap() {
+    let (engine, cryptos) = setup();
+    let genesis = engine.genesis_state(0);
+    let mut certificates = Vec::new();
+    for index in 0..80u16 {
+        let proposal = signed_proposal(&engine, &cryptos, vec![transaction_digest(index)]);
+        certificates.push(isolated_certificate(&engine, &cryptos, &genesis, &proposal));
+    }
+
+    let mut forward = genesis.clone();
+    for certificate in &certificates {
+        forward = observe_certificate(&engine, forward, certificate.clone(), &cryptos[0]);
+        assert!(
+            forward.certificates.len() <= 2,
+            "same-view bodyless QCs must not accumulate toward the 4096 codec cap"
+        );
+        encode_consensus_state(&forward).unwrap();
+    }
+    assert!(
+        forward
+            .certificates
+            .contains_key(&forward.high_qc.proposal_digest)
+    );
+    engine.validate_state(&forward, &cryptos[0]).unwrap();
+
+    let mut reverse = genesis;
+    for certificate in certificates.iter().rev() {
+        reverse = observe_certificate(&engine, reverse, certificate.clone(), &cryptos[0]);
+        encode_consensus_state(&reverse).unwrap();
+    }
+    assert!(reverse.certificates.len() <= 2);
+    assert!(
+        reverse
+            .certificates
+            .contains_key(&reverse.high_qc.proposal_digest)
+    );
+    let restarted = decode_consensus_state(&encode_consensus_state(&forward).unwrap()).unwrap();
+    assert_eq!(restarted, forward);
+}
+
+#[test]
+fn observer_same_height_bodyless_qcs_are_count_bounded_newest_view_first() {
+    let (engine, cryptos) = setup();
+    let genesis = engine.genesis_state(0);
+    let mut certificates = Vec::new();
+    for view in 1..=80u64 {
+        let voter_state = ticked_state(&engine, &cryptos, view);
+        let proposal = engine
+            .propose(
+                &voter_state,
+                vec![transaction_digest(u16::try_from(view).unwrap())],
+                leader_crypto(&engine, &cryptos, view),
+            )
+            .unwrap();
+        certificates.push(isolated_certificate(
+            &engine,
+            &cryptos,
+            &voter_state,
+            &proposal,
+        ));
+    }
+
+    let mut forward = genesis.clone();
+    for certificate in &certificates {
+        forward = observe_certificate(&engine, forward, certificate.clone(), &cryptos[0]);
+        assert!(
+            forward.certificates.len() <= MAX_SPECULATIVE_BODYLESS_CERTIFICATES + 1,
+            "speculative bodyless QCs plus high_qc must stay inside the count budget"
+        );
+        encode_consensus_state(&forward).unwrap();
+        assert!(
+            encode_consensus_state(&forward).unwrap().len() <= MAX_ENCODED_CONSENSUS_STATE_BYTES
+        );
+    }
+    assert_eq!(forward.high_qc.view, 80);
+    assert!(
+        forward.certificates.values().all(
+            |certificate| certificate.view >= 80 - MAX_SPECULATIVE_BODYLESS_CERTIFICATES as u64
+        ),
+        "oldest same-height bodyless QCs are dropped newest-view-first"
+    );
+    assert!(
+        !forward
+            .certificates
+            .contains_key(&certificates[0].proposal_digest)
+    );
+
+    let mut reverse = genesis;
+    for certificate in certificates.iter().rev() {
+        reverse = observe_certificate(&engine, reverse, certificate.clone(), &cryptos[0]);
+    }
+    assert_eq!(reverse.high_qc.view, 80);
+    assert_eq!(reverse.certificates, forward.certificates);
+    engine.validate_state(&forward, &cryptos[0]).unwrap();
+}
+
+#[test]
+fn observer_accepts_a_bodyless_qc_beyond_the_proposal_future_view_gap() {
+    let (engine, cryptos) = setup();
+    let genesis = engine.genesis_state(0);
+    let view = genesis.current_view + 66;
+    let voter_state = ticked_state(&engine, &cryptos, view);
+    let proposal = engine
+        .propose(
+            &voter_state,
+            vec![transaction_digest(66)],
+            leader_crypto(&engine, &cryptos, view),
+        )
+        .unwrap();
+    let certificate = isolated_certificate(&engine, &cryptos, &voter_state, &proposal);
+    let observed = engine
+        .on_observer_event(
+            &genesis,
+            ConsensusEvent::Certificate(certificate.clone()),
+            &cryptos[0],
+        )
+        .expect("authenticated certificates must not be future-view fenced");
+    assert_eq!(observed.state.high_qc.view, view);
+    assert_eq!(observed.state.current_view, view + 1);
+    assert!(
+        observed
+            .state
+            .certificates
+            .contains_key(&certificate.proposal_digest)
+    );
+    encode_consensus_state(&observed.state).unwrap();
+}
+
+#[test]
+fn speculative_bodyless_qc_bytes_are_bounded_before_the_count_cap() {
+    let (engine, cryptos) = setup();
+    let genesis = engine.genesis_state(0);
+    let template_proposal = signed_proposal(&engine, &cryptos, vec![transaction_digest(1)]);
+    let template = isolated_certificate(&engine, &cryptos, &genesis, &template_proposal);
+    let fat_signature = vec![0xAB; 4096];
+    let mut fat_vote = template.votes[0].clone();
+    fat_vote.signature = fat_signature;
+    let mut unbounded_bytes = encode_consensus_state(&genesis).unwrap().len();
+    let mut state = genesis.clone();
+    for index in 0..8u8 {
+        let mut certificate = template.clone();
+        certificate.proposal_digest = Digest32::new(HashAlgorithmId::Sha2_256, [index + 10; 32]);
+        certificate.votes = vec![fat_vote.clone(); 2_048];
+        unbounded_bytes +=
+            encoded_certificate_entry_bytes(&certificate.proposal_digest, &certificate).unwrap();
+        state
+            .certificates
+            .insert(certificate.proposal_digest, certificate);
+    }
+    assert!(unbounded_bytes > MAX_ENCODED_CONSENSUS_STATE_BYTES);
+    let pruned = engine
+        .on_event(
+            &state,
+            ConsensusEvent::Tick { now_unix_millis: 0 },
+            &cryptos[0],
+            &cryptos[0],
+        )
+        .unwrap();
+    assert!(
+        encode_consensus_state(&pruned.state).unwrap().len() <= MAX_ENCODED_CONSENSUS_STATE_BYTES
+    );
+    assert!(pruned.state.certificates.len() < 8);
+}
+
+#[test]
+fn delayed_optional_qc_reserves_its_available_ancestry_before_admission() {
+    let (engine, cryptos) = setup();
+    let mut voters = vec![engine.genesis_state(0); cryptos.len()];
+    let (parent, votes) = proposal_votes(&engine, &mut voters, &cryptos, 41);
+    let _ = certify(&engine, &mut voters, &cryptos, &votes);
+    let (child, votes) = proposal_votes(&engine, &mut voters, &cryptos, 42);
+    let (certificate, _) = certify(&engine, &mut voters, &cryptos, &votes);
+    let parent_digest = engine.proposal_digest(&parent).unwrap();
+    let child_digest = engine.proposal_digest(&child).unwrap();
+    let known = BTreeMap::from([
+        (parent_digest, parent.clone()),
+        (child_digest, child.clone()),
+    ]);
+    let newer_view = ticked_state(&engine, &cryptos, 3);
+    let newer_proposal = engine
+        .propose(
+            &newer_view,
+            vec![transaction_digest(43)],
+            leader_crypto(&engine, &cryptos, 3),
+        )
+        .unwrap();
+    let newer_qc = isolated_certificate(&engine, &cryptos, &newer_view, &newer_proposal);
+    let mut observer = engine.genesis_state(0);
+    observer.current_view = 4;
+    observer.high_qc = newer_qc.clone();
+    observer.known_proposals = known.clone();
+    observer
+        .certificates
+        .insert(newer_qc.proposal_digest, newer_qc);
+    engine.validate_state(&observer, &cryptos[0]).unwrap();
+    assert!(!crate::safety_protected_proposal_digests(&observer, 0).contains(&child_digest));
+
+    let candidates = BTreeMap::from([(child_digest, certificate.clone())]);
+    let certificate_cost = encoded_certificate_entry_bytes(&child_digest, &certificate).unwrap();
+    let child_cost = encoded_known_proposal_entry_bytes(&child_digest, &child).unwrap();
+    let parent_cost = encoded_known_proposal_entry_bytes(&parent_digest, &parent).unwrap();
+    let full_cost = certificate_cost + child_cost + parent_cost;
+
+    // A delayed QC is optional when a newer high/lock branch owns the safety
+    // roots. The available budget can fit the QC and child, but not its parent.
+    // Admission must skip the whole optional chain instead of making the
+    // subsequent mandatory ancestry pass fail.
+    let mut retained_bodies = BTreeMap::new();
+    let mut retained_certificates = BTreeMap::new();
+    let short_budget = full_cost - 1;
+    let remaining = admit_speculative_bodyless_certificates(
+        &candidates,
+        &known,
+        &mut retained_bodies,
+        &mut retained_certificates,
+        0,
+        short_budget,
+    )
+    .unwrap();
+    assert_eq!(remaining, short_budget);
+    assert!(retained_bodies.is_empty());
+    assert!(retained_certificates.is_empty());
+
+    // With the exact complete-chain budget, the same authenticated QC and
+    // both available bodies remain, preserving ordinary certified progress.
+    let remaining = admit_speculative_bodyless_certificates(
+        &candidates,
+        &known,
+        &mut retained_bodies,
+        &mut retained_certificates,
+        0,
+        full_cost,
+    )
+    .unwrap();
+    assert_eq!(remaining, 0);
+    assert_eq!(retained_bodies, known);
+    assert_eq!(retained_certificates, candidates);
+
+    // Reattachment after speculative body selection must obey the same
+    // ancestry rule: a retained child alone does not pin its available parent.
+    let child_only = BTreeMap::from([(child_digest, child)]);
+    let mut reattached = BTreeMap::new();
+    let remaining = attach_certificates_for_retained_bodies(
+        &candidates,
+        &known,
+        &child_only,
+        &mut reattached,
+        0,
+        certificate_cost,
+    )
+    .unwrap();
+    assert_eq!(remaining, certificate_cost);
+    assert!(reattached.is_empty());
+    let remaining = attach_certificates_for_retained_bodies(
+        &candidates,
+        &known,
+        &retained_bodies,
+        &mut reattached,
+        0,
+        certificate_cost,
+    )
+    .unwrap();
+    assert_eq!(remaining, 0);
+    assert_eq!(reattached, candidates);
+}
+
+#[test]
+fn evicted_bodyless_qc_and_body_redelivery_recovers_certified_progress() {
+    let (engine, cryptos) = setup();
+    let mut honest = vec![engine.genesis_state(0); 4];
+    for byte in 1..=2u8 {
+        let (_, votes) = proposal_votes(&engine, &mut honest, &cryptos, byte);
+        let _ = certify(&engine, &mut honest, &cryptos, &votes);
+    }
+    let high_before = honest[0].high_qc.clone();
+    let locked_before = honest[0].locked_qc.clone();
+    let last_voted_before = honest[0].last_voted_digest;
+
+    let mut observer = honest[0].clone();
+    for view in observer.current_view..=observer.current_view + 80 {
+        let voter_state = ticked_state(&engine, &cryptos, view);
+        let proposal = engine
+            .propose(
+                &voter_state,
+                vec![transaction_digest(u16::try_from(view).unwrap())],
+                leader_crypto(&engine, &cryptos, view),
+            )
+            .unwrap();
+        let certificate = isolated_certificate(&engine, &cryptos, &voter_state, &proposal);
+        observer = observe_certificate(&engine, observer, certificate, &cryptos[0]);
+    }
+    assert_eq!(observer.locked_qc, locked_before);
+    assert_eq!(observer.last_voted_digest, last_voted_before);
+    assert!(
+        observer
+            .certificates
+            .contains_key(&high_before.proposal_digest)
+            || observer.high_qc.view > high_before.view
+    );
+    assert!(
+        observer
+            .known_proposals
+            .contains_key(&locked_before.proposal_digest)
+            || locked_before.view == 0
+    );
+
+    let recover_view = observer.high_qc.view + 1;
+    let voter_state = ticked_state(&engine, &cryptos, recover_view);
+    let recover_proposal = engine
+        .propose(
+            &voter_state,
+            vec![transaction_digest(900)],
+            leader_crypto(&engine, &cryptos, recover_view),
+        )
+        .unwrap();
+    let recover_digest = engine.proposal_digest(&recover_proposal).unwrap();
+    let recover_qc = isolated_certificate(&engine, &cryptos, &voter_state, &recover_proposal);
+    let certified = observe_certificate(&engine, observer, recover_qc, &cryptos[0]);
+    assert_eq!(certified.high_qc.proposal_digest, recover_digest);
+    assert!(!certified.known_proposals.contains_key(&recover_digest));
+
+    let restored = engine
+        .on_observer_event(
+            &certified,
+            ConsensusEvent::Proposal(recover_proposal),
+            &cryptos[0],
+        )
+        .unwrap();
+    assert!(restored.state.known_proposals.contains_key(&recover_digest));
+    assert_eq!(restored.state.high_qc.proposal_digest, recover_digest);
+    encode_consensus_state(&restored.state).unwrap();
+}
+
+#[test]
+fn saturated_v1_certificate_snapshot_round_trips_then_compacts() {
+    let (engine, cryptos) = setup();
+    let genesis = engine.genesis_state(0);
+    let template_proposal = signed_proposal(&engine, &cryptos, vec![transaction_digest(7)]);
+    let template = isolated_certificate(&engine, &cryptos, &genesis, &template_proposal);
+    let mut saturated = genesis.clone();
+    for index in 0..4_096u32 {
+        let mut certificate = template.clone();
+        let mut digest_bytes = [0x44; 32];
+        digest_bytes[..4].copy_from_slice(&index.to_le_bytes());
+        let digest = Digest32::new(HashAlgorithmId::Sha2_256, digest_bytes);
+        certificate.proposal_digest = digest;
+        for vote in &mut certificate.votes {
+            vote.proposal_digest = digest;
+        }
+        saturated.certificates.insert(digest, certificate);
+    }
+    assert_eq!(saturated.certificates.len(), 4_096);
+    let encoded = encode_consensus_state(&saturated).unwrap();
+    let restored = decode_consensus_state(&encoded).unwrap();
+    assert_eq!(restored.certificates.len(), 4_096);
+    assert_eq!(encode_consensus_state(&restored).unwrap(), encoded);
+
+    let live = isolated_certificate(
+        &engine,
+        &cryptos,
+        &genesis,
+        &signed_proposal(&engine, &cryptos, vec![transaction_digest(8)]),
+    );
+    let compacted = observe_certificate(&engine, restored, live, &cryptos[0]);
+    assert!(compacted.certificates.len() < MAX_STATE_CERTIFICATES);
+    assert!(compacted.certificates.len() <= MAX_SPECULATIVE_BODYLESS_CERTIFICATES + 1);
+    encode_consensus_state(&compacted).unwrap();
 }
