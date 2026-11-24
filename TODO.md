@@ -1,6 +1,6 @@
 # Sunrise Edge: 現在のTODO
 
-更新: 2026-11-17 (Asia/Singapore)。元85チェックのうち74件は完了、元の未完了は下の11件（親11件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+更新: 2026-11-24 (Asia/Singapore)。元85チェックのうち74件は完了、元の未完了は下の11件（親11件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
 
 ## コード・検証: 親5件
 
@@ -8,7 +8,8 @@
   - economics/FastVote、generic contracts、ingress、lifecycleの最終範囲を同一sourceで監査し、指摘修正と独立再検証を終える。tech-lead approvalや過去の狭いscanは代替しない。
   - M1と監査対象・証拠を共用できる。旧private sourceの独立scanは1,369ファイル中53ファイルの部分進捗にとどまり、完走結果はない。現行mainの最終監査には転用しない。
   - [ ] 最終sourceの上記4領域を独立監査で通す。
-  - [ ] 指摘を修正し、独立に再確認する。
+  - [x] 既知の非公開指摘の修正を[公開mainのcommit `6aedd259`](https://github.com/sunriselayer/sunrise-edge/commit/6aedd259dad94654b659d21b6201df865754b1b1)へ統合し、重複した非公開PRを閉じた。最終sourceの4領域監査はこの結果だけでは完了しない。
+  - [ ] 最終sourceの監査で残る指摘を修正し、独立に再確認する。
 
 - [ ] **M1: 固定releaseの独立security/release reviewを終える**
   - code/deployment仕様、contracts、economics、handoff/activation、ingress、storage、signingを固定し、指摘・修正・残余リスクを独立に確認する。D02と同じ範囲の結果は共用する。
@@ -64,6 +65,10 @@
   - [x] `2415dbec`の13-target A/B・RELEASE・完全gateを旧sourceの基準結果として[保存した](docs/development/validation/2026-11-08-m7-release-issue-disposition/README.md#2026-11-11-exact-source-follow-up)。
   - [ ] 最終sourceで再現可能なbuild・実行結果を揃える。
   - [ ] 独立security/release reviewとissue dispositionを終える。
+
+### 非公開監査repoの後片付け
+
+- [ ] D02/M1の最終独立reviewと3件のDraft Security Advisoryの処理を終え、必要な非公開証跡を保存した後、一時監査用の非公開repoを廃止する。元85件の親条件には加えない。
 
 ### M2初期リリース対象の照合 (2026-11-03)
 
