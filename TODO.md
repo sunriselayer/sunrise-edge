@@ -12,6 +12,7 @@
     - [x] 債券primitiveの限定component: `1788b948606f11f17321d3c1979ae149200137a1`の`crates/bonds` 2ファイルを独立に静的reviewし、Codex Security scan `e8857ec6-1339-4572-b68c-c8bdc51f63e9`は報告対象0件。owning test 16件とClippyが成功した。現行の非test利用がないadmission/evidence APIを有効化する際のcaller監査、FastVote連携、最終source全体の資格には転用しない。
     - [x] validator-setの限定component: `78187e757a19f707bb6c469e38b60f5ea8a8cc44`の`crates/validator-set` 2ファイルを独立に静的reviewし、Codex Security scan `d4bcd8ba-dfc3-489b-8168-dccab344973e`は報告対象0件。owning test 12件とClippyが成功した。暗号鍵・署名の実承認とFastVote統合、最終source全体の資格には転用しない。
     - [x] system-modulesの限定component: `985791375f54a912043089dbd4c4403c96360502`の`crates/system-modules` 2ファイルを独立に静的reviewし、Codex Security scan `45c88144-6ab7-4e84-9817-00ceaa0e4beb`は報告対象0件。owning test 8件とClippyが成功した。実行側の呼出元は到達性・制御の確認に限り、generic contracts全体と最終source全体の資格には転用しない。
+    - [x] hash-suite scheduleとupgrade型の限定component: 同sourceの`crates/protocol-upgrades` 2ファイルを独立に静的reviewし、Codex Security scan `2dea698e-d2a1-40c2-a4a9-2cf6bd82caab`は報告対象0件。owning test 7件とClippyが成功した。現行のschedule利用を確認した一方、外部`ApplyProtocolUpgrade`は拒否され、実upgrade・migrationの起動資格と最終source全体の監査は残る。
   - [ ] 指摘を修正し、独立に再確認する。
 
 - [ ] **M1: 固定releaseの独立security/release reviewを終える**
