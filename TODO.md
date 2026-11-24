@@ -68,7 +68,7 @@
 ### 非公開監査repoの後片付け
 
 - [x] 今回の非公開指摘3件の修正を[公開mainのcommit `6aedd259`](https://github.com/sunriselayer/sunrise-edge/commit/6aedd259dad94654b659d21b6201df865754b1b1)へ統合し、重複した非公開PRを閉じた。D02/M1の最終独立reviewは別に残る。
-- [ ] D02/M1の最終独立reviewと3件のDraft Security Advisoryの処理を終え、必要な非公開証跡を保存した後、一時監査用の非公開repoを廃止する。元85件の親条件には加えない。
+- [ ] 3件のDraft Security Advisoryの対応と必要な非公開証跡の保存を終えたら、一時監査用の非公開repoを廃止する。D02/M1のrelease reviewとは別の後片付けであり、元85件の親条件には加えない。
 
 ### M2初期リリース対象の照合 (2026-11-03)
 
