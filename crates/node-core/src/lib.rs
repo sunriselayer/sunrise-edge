@@ -4716,6 +4716,7 @@ where
         submission,
         created_checkpoint,
         fee_composition,
+        StagedAdmission::HistoricalDirect,
     )?;
     let output = commit_staged_durable_event(Some(blob_store), store, context, staged)?;
     Ok(ResolvedNodeOutput::new(domain, output))
@@ -4723,9 +4724,23 @@ where
 
 /// Builds the exact existing preinstalled-WASM invocation without publishing
 /// blobs, advancing a nonce, or committing its receipt and object effects.
-/// The direct admission gate still refuses causal stores; a later certified
-/// prepare must add its own verified-profile gate before using this staging
-/// boundary for the causal family.
+/// The direct caller retains its historical gate. The causal variant only
+/// stages an invocation; it never publishes, signs, reserves, or commits it.
+#[allow(dead_code)] // The causal variant awaits the certified prepare owner.
+#[derive(Clone, Copy)]
+enum StagedAdmission<'a> {
+    HistoricalDirect,
+    CausalPrepare(&'a admission_profile::VerifiedAdmissionProfile),
+}
+
+impl StagedAdmission<'_> {
+    fn lock_mode(self) -> mutation_fence::LockMode {
+        match self {
+            Self::HistoricalDirect | Self::CausalPrepare(_) => mutation_fence::LockMode::Fresh,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn stage_preinstalled_submit_invocation<S, B>(
     blob_store: &B,
@@ -4737,11 +4752,15 @@ fn stage_preinstalled_submit_invocation<S, B>(
     submission: AuthenticatedSubmitTransaction,
     created_checkpoint: u64,
     fee_composition: Option<PreinstalledFeeComposition<'_>>,
+    admission: StagedAdmission<'_>,
 ) -> Result<(AtomicityDomainId, StagedDurableEventOutcome), NodeCoreError>
 where
     S: StructuredDurableDomainStateStore,
     B: BlobStore,
 {
+    if let StagedAdmission::CausalPrepare(profile) = admission {
+        submission.require_causal_owned_preinstalled_candidate(profile)?;
+    }
     let dispatch = AuthenticatedObjectDispatch::from_authenticated_transaction(
         &submission.transaction,
         AuthenticatedObjectPolicy::OwnedMutations { created_checkpoint },
@@ -4793,6 +4812,7 @@ where
         Some(dispatch),
         Some(created_checkpoint),
         Some(&machine),
+        admission,
     )?;
     Ok((domain, staged))
 }
@@ -4920,6 +4940,7 @@ where
         dispatch,
         created_checkpoint,
         preinstalled_machine,
+        StagedAdmission::HistoricalDirect,
     )?;
     commit_staged_durable_event(blob_store, store, context, staged)
 }
@@ -4964,6 +4985,7 @@ fn stage_durable_idempotent_event_with_plan<S, M>(
     dispatch: Option<AuthenticatedObjectDispatch>,
     created_checkpoint: Option<u64>,
     preinstalled_machine: Option<&PreinstalledWasmMachine<'_>>,
+    admission: StagedAdmission<'_>,
 ) -> Result<StagedDurableEventOutcome, NodeCoreError>
 where
     S: StructuredDurableDomainStateStore,
@@ -5031,13 +5053,40 @@ where
             installed_epoch,
         )
         .map_err(|_| NodeCoreError::PersistenceInvariant("direct admission context"))?;
-    admission_profile::require_historical_direct_writer(
-        store,
-        context,
-        domain,
-        &direct_context,
-        &mut direct_profile_reads,
-    )?;
+    match admission {
+        StagedAdmission::HistoricalDirect => admission_profile::require_historical_direct_writer(
+            store,
+            context,
+            domain,
+            &direct_context,
+            &mut direct_profile_reads,
+        )?,
+        StagedAdmission::CausalPrepare(profile) => {
+            admission_profile::fence_verified_admission_profile(
+                store,
+                context,
+                domain,
+                profile,
+                &mut direct_profile_reads,
+            )?;
+            // The prepared slot is shared with the paid family. This
+            // no-authority stage only accepts a genuinely never-created slot;
+            // a future prepare owner handles same-family replay itself.
+            let prepared_key = local_instance_state::fastpath_prepared_record_key(
+                event.chain_id(),
+                event.request_id().as_bytes(),
+            )?;
+            let prepared_row = store.get_versioned_durable(context, domain, &prepared_key)?;
+            if prepared_row.value().is_some()
+                || prepared_row.revision() != StateRevision::INITIAL
+            {
+                return Err(NodeCoreError::PersistenceInvariant(
+                    "causal prepared slot already occupied",
+                ));
+            }
+            direct_profile_reads.insert(prepared_key, prepared_row.revision());
+        }
+    }
 
     // The runtime's total bound is unchanged. Configuration assertions use
     // real slots too, so refuse an oversized application plan before any
@@ -5099,7 +5148,7 @@ where
                 reservation.epoch,
                 event.request_id().as_bytes(),
                 reservation.nonce,
-                mutation_fence::LockMode::Fresh,
+                admission.lock_mode(),
                 &mut fence_reads,
             )?;
             if let Some(dispatch) = dispatch.as_ref() {
@@ -5113,7 +5162,7 @@ where
                             &access.object_ref,
                             event.request_id().as_bytes(),
                             event.epoch(),
-                            mutation_fence::LockMode::Fresh,
+                            admission.lock_mode(),
                             &mut fence_reads,
                         )?;
                         if lock_state == mutation_fence::ObjectLockState::Reclaimable {
@@ -5267,6 +5316,13 @@ where
     };
     let transition = machine.transition(&snapshot, &event)?;
     validate_output_event_context(transition.output(), &event)?;
+    if !matches!(admission, StagedAdmission::HistoricalDirect)
+        && !transition.output.outbound_messages.is_empty()
+    {
+        return Err(NodeCoreError::PersistenceInvariant(
+            "causal SubmitTransaction cannot stage outbound messages",
+        ));
+    }
     if let Some(dispatch) = &dispatch {
         validate_output_owner_addresses(
             transition.object_effects(),

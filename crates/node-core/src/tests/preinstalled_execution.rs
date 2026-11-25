@@ -910,6 +910,7 @@ fn preinstalled_wasm_owned_write_commits_object_nonce_and_receipt() {
         submission.clone(),
         9,
         None,
+        StagedAdmission::HistoricalDirect,
     )
     .unwrap();
     let staged_output = match staged {
@@ -1455,6 +1456,7 @@ fn preinstalled_wasm_exact_replay_does_not_reexecute_or_reapply() {
         replay_submission.clone(),
         999,
         None,
+        StagedAdmission::HistoricalDirect,
     )
     .unwrap();
     match staged_replay {
