@@ -63,3 +63,23 @@ still make admission reject the signed request.
 Keep the unsigned request, pinned policy, signed intent and any result under
 their own request ID. Retry an uncertain submission with the identical signed
 bytes; a changed nonce, policy, source, or application needs a new approval.
+
+## Disposable distinct-UID Publish check
+
+The [Docker fixture](../../scripts/check-docker-generic-paid-custody.py) reuses
+the existing SQLite/native-HTTP paid-contract test server and runs the real
+CLI under separate operator and custody Linux UIDs. It covers Publish's
+unsigned export, bounded PTY review and exact confirmation, protected signature,
+direct signed submission, and focused permission/approval refusals. Build the
+CLI binary and `devnet_paid_contract_e2e` test binary from the same source,
+then pass their absolute paths:
+
+```sh
+python3 scripts/check-docker-generic-paid-custody.py \
+  --cli-binary /absolute/path/to/sunrise-edge-cli \
+  --test-binary /absolute/path/to/devnet_paid_contract_e2e-HASH
+```
+
+The fixture uses a disposable fixed key and an isolated Docker network with
+only loopback traffic. It does not cover Instantiate/Call under separate UIDs,
+FastVote replay, an enrolled operator key, or a public deployment.

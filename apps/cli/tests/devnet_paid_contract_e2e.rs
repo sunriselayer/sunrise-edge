@@ -9,7 +9,7 @@ use abi::{
     public_abi::{EntrypointDeclaration, PackageAbi},
 };
 use execution::paid_execution::{
-    PaidExecutionResult, PaidExecutionStatus, decode_paid_execution_result,
+    PaidExecutionResult, PaidExecutionStatus, decode_paid_execution_result, encode_paid_fee_policy,
 };
 use execution::publication::PublicationContext;
 use objects::ObjectId;
@@ -42,14 +42,18 @@ fn write_seed(path: &std::path::Path) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn paid_publish_instantiate_and_call_cross_cli_http_and_sqlite() {
+    let custody_fixture_dir =
+        std::env::var_os("SUNRISE_GENERIC_PAID_CUSTODY_FIXTURE_DIR").map(PathBuf::from);
     let unique: u128 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let directory: PathBuf = std::env::temp_dir().join(format!(
-        "sunrise-cli-paid-contract-{}-{unique}",
-        std::process::id()
-    ));
+    let directory: PathBuf = custody_fixture_dir.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!(
+            "sunrise-cli-paid-contract-{}-{unique}",
+            std::process::id()
+        ))
+    });
     fs::create_dir(&directory).unwrap();
     let _owned_directory = OwnedDirectory(directory.clone());
     let signer: LocalSigner = LocalSigner::from_seed([7; 32]);
@@ -160,6 +164,13 @@ async fn paid_publish_instantiate_and_call_cross_cli_http_and_sqlite() {
     )
     .unwrap();
     let fee_coin: ObjectId = activation.metadata.owner_coins[0].fee_coin;
+    if custody_fixture_dir.is_some() {
+        fs::write(
+            directory.join("paid-policy"),
+            encode_paid_fee_policy(&activation.fee_policy).unwrap(),
+        )
+        .unwrap();
+    }
     let paid_execution =
         native_http::PaidExecutionComposition::new(activation.base_policy, activation.fee_policy);
     let (store, blobs) = boot.into_parts();
@@ -184,6 +195,34 @@ async fn paid_publish_instantiate_and_call_cross_cli_http_and_sqlite() {
             let _ignored = shutdown.await;
         },
     ));
+
+    // The Docker-only fixture reuses this exact SQLite/HTTP composition. Its
+    // root orchestrator runs the public CLI under separate operator/custody
+    // UIDs; this process only publishes nonsecret pins and keeps the server
+    // alive until the finite orchestrator has finished.
+    if custody_fixture_dir.is_some() {
+        let parent = directory.parent().unwrap();
+        fs::write(
+            parent.join("paid-ready"),
+            format!(
+                "endpoint={endpoint}\nprotocol_version={}\ndomain={domain}\npublisher={}\nfee_source={fee_coin}\n",
+                resolver.protocol_version().get(),
+                signer.address()
+            ),
+        )
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        while !parent.join("paid-stop").exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            parent.join("paid-stop").exists(),
+            "custody fixture did not stop"
+        );
+        let _ignored = stop.send(());
+        server.await.unwrap().unwrap();
+        return;
+    }
 
     let path: PathBuf = directory.clone();
     let outcome = tokio::task::spawn_blocking(move || {
