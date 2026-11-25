@@ -34,12 +34,15 @@ transition, outbox work, or transport delivery.
 
 A separate, opt-in, operator-composed native surface
 ([DR-0148](docs/architecture/decisions/0148-certified-fastvote-network.md))
-serves only the two FastVote prepare/certificate routes plus bounded reads; it
-never mounts `SubmitTransaction` or any other mutating route, regardless of
-configuration, and does not weaken or replace the `SubmitTransaction`
-invariants above. It is a development implementation, not independently
-security-audited, and is not authorized for live exposure or custody of real
-assets.
+mounts certified FastVote prepare/certificate, publication, frontier and drain
+routes plus bounded reads. Its actual host and adapter boundaries are recorded
+in [compositions and capabilities](docs/architecture/compositions-and-capabilities.md).
+This router does not mount `SubmitTransaction` or the direct paid/local
+mutation routes, and does not weaken or replace the `SubmitTransaction`
+invariants above. The supported routes depend on the concrete host and relay
+composition. This is a development implementation, not independently
+security-audited across the full reachable scope, and is not authorized for
+live exposure or custody of real assets.
 
 The separate [DR-0149 offline fee-claim operator](docs/architecture/decisions/0149-offline-signed-fee-claims.md)
 targets one explicitly stopped PostgreSQL namespace under independently pinned
