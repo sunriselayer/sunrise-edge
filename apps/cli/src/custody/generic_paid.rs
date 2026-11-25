@@ -255,6 +255,37 @@ fn approval_matches(
         && approval.frame == exact_frame
 }
 
+pub(super) fn sign<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    let mut flags = specs();
+    flags.extend([scalar("--key-file"), scalar("--out")]);
+    let (parsed, schedules) = crate::commands::hash_suite_pins::parse_pinned_flags(args, &flags)?;
+    let output = Path::new(parsed.require("--out")?);
+    super::check_review_preimage_destination(output)?;
+    let (config, policy_bytes, request_bytes) = read_pins(&parsed)?;
+    let (expected, resolver) = load_context(&parsed, schedules, &config)?;
+    let client = connect_paid_execution(parsed.require(ENDPOINT)?, &parsed)?;
+    let (prepared, _review, request_id) = prepare(
+        &client,
+        &config,
+        &resolver,
+        &expected,
+        &policy_bytes,
+        &request_bytes,
+    )?;
+    let signer = super::keyfile::load_signer(Path::new(parsed.require("--key-file")?))?;
+    let signed = sign_approved(
+        &signer,
+        &config,
+        Path::new(parsed.require(APPROVALS)?),
+        &request_id,
+        prepared,
+    )?;
+    let bytes = encode_signed_paid_intent(&signed).map_err(fail)?;
+    super::write_review_preimage(output, &bytes)?;
+    println!("signed_paid_exported=true\nrequest_id={request_id}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,35 +335,4 @@ mod tests {
             false
         ));
     }
-}
-
-pub(super) fn sign<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
-    let mut flags = specs();
-    flags.extend([scalar("--key-file"), scalar("--out")]);
-    let (parsed, schedules) = crate::commands::hash_suite_pins::parse_pinned_flags(args, &flags)?;
-    let output = Path::new(parsed.require("--out")?);
-    super::check_review_preimage_destination(output)?;
-    let (config, policy_bytes, request_bytes) = read_pins(&parsed)?;
-    let (expected, resolver) = load_context(&parsed, schedules, &config)?;
-    let client = connect_paid_execution(parsed.require(ENDPOINT)?, &parsed)?;
-    let (prepared, _review, request_id) = prepare(
-        &client,
-        &config,
-        &resolver,
-        &expected,
-        &policy_bytes,
-        &request_bytes,
-    )?;
-    let signer = super::keyfile::load_signer(Path::new(parsed.require("--key-file")?))?;
-    let signed = sign_approved(
-        &signer,
-        &config,
-        Path::new(parsed.require(APPROVALS)?),
-        &request_id,
-        prepared,
-    )?;
-    let bytes = encode_signed_paid_intent(&signed).map_err(fail)?;
-    super::write_review_preimage(output, &bytes)?;
-    println!("signed_paid_exported=true\nrequest_id={request_id}");
-    Ok(())
 }
