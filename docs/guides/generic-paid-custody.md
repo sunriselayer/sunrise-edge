@@ -1,8 +1,9 @@
 # Generic paid contract custody handoff
 
 This route accepts generic paid Publish, Instantiate, and Call under the
-existing canonical `PaidIntent` signing frame. It uses an offline request
-file and a separate custody UID; no contract command reads the custody key.
+existing canonical `PaidIntent` signing frame. It uses a saved request file
+and a separate custody UID; no contract command reads the custody key.
+Approval and signing both query the configured endpoint; they are not offline.
 The selected endpoint is checked against explicit protocol pins. Its current
 fee-source response is an endpoint observation, and a later state change may
 still make admission reject the signed request.
@@ -15,7 +16,14 @@ still make admission reject the signed request.
    unsigned intent and bounded review, then stops before signing or
    submission. The socket and UID flags satisfy the existing all-or-none
    custody selection grammar; this export does not connect to that socket.
-   `--fastvote-network` is unavailable in this preparation step.
+   For a later FastVote replay, also provide `--fastvote-network`, the
+   locally pinned `--fastvote-genesis-manifest` and
+   `--fastvote-expected-genesis-digest`, and select one configured
+   `--endpoint`. The CLI authenticates the genesis/cohort and rejects a
+   request ID outside its owned lane before exporting anything. Do not
+   provide signed-intent, certificate, result, or derived-output paths during
+   unsigned preparation. The signed intent and certificates are created
+   separately after approval.
 2. Place the exact unsigned file and the independently pinned canonical paid
    fee-policy file in a custody-owned mode-`0700` directory as mode-`0600`
    files. A privileged operator can use `install -o CUSTODY_UID -g CUSTODY_GROUP

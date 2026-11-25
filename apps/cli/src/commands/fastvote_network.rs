@@ -511,6 +511,19 @@ pub(super) fn validate_paid_network_flags(parsed: &ParsedArgs) -> Result<(), Cli
     Ok(())
 }
 
+/// Network-backed unsigned custody preparation uses the same trusted
+/// genesis/cohort and source-query path, but creates no signed intent or
+/// certificate artifacts. Those outputs belong to a later exact replay.
+pub(super) fn validate_paid_unsigned_network_flags(parsed: &ParsedArgs) -> Result<(), CliError> {
+    if parsed.get(TLS_SERVER_NAME).is_some() || parsed.get(TLS_CA_CERT_DER_FILE).is_some() {
+        return Err(invalid(
+            "global TLS flags are unsupported with --fastvote-network; configure TLS independently for each cohort peer",
+        ));
+    }
+    parsed.require("--endpoint")?;
+    Ok(())
+}
+
 pub(super) fn selected_preparation_client<'a, T: Transport>(
     endpoints: &'a [FastVoteEndpoint<T>],
     selected: &str,
@@ -571,7 +584,7 @@ fn print_repin_diagnostic(error: &impl std::fmt::Display) {
     }
 }
 
-fn require_owned_lane(
+pub(super) fn require_owned_lane(
     admission: &VerifiedAdmissionProfile,
     request: &[u8; 32],
 ) -> Result<(), CliError> {

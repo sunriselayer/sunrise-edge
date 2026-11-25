@@ -1,7 +1,7 @@
-//! Offline, operation-specific generic paid approval and protected signing.
+//! Endpoint-checked, operation-specific generic paid approval and protected signing.
 //! The signer never accepts a caller-supplied signing frame. Both invocations
 //! rebuild it from an exact canonical paid intent, custody's own context and
-//! fee-policy pin, and a fresh current fee-source query through the pinned
+//! fee-policy pin, and a fresh current fee-source query through the configured
 //! endpoint before an approval or signature can be produced.
 
 use std::{
@@ -208,7 +208,7 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
 }
 
 /// Checks the exact persisted approval and revocation before signing the
-/// independently rebuilt owner. Used only by the offline custody UID command.
+/// independently rebuilt owner. Used only by the custody UID command.
 pub(super) fn sign_approved(
     signer: &LocalSigner,
     config: &CustodyConfig,

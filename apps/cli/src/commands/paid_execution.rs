@@ -243,8 +243,30 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     if action != "paid-call" && parsed.get("--authorizations").is_some() {
         return Err(invalid("--authorizations is supported only for paid-call"));
     }
+    let unsigned_export = parsed.get("--unsigned-out").is_some();
+    if unsigned_export {
+        for name in [
+            "--submission-out",
+            "--result-out",
+            "--dependency-ref-out",
+            "--instance-ref-out",
+            "--fastvote-signed-intent-out",
+            "--fastvote-certificate-out",
+            "--fastvote-availability-certificate-out",
+        ] {
+            if parsed.get(name).is_some() {
+                return Err(invalid(
+                    "unsigned custody preparation cannot reserve submission, result, certificate, or derived outputs",
+                ));
+            }
+        }
+    }
     if budget.is_some() {
-        super::fastvote_network::validate_paid_network_flags(&parsed)?;
+        if unsigned_export {
+            super::fastvote_network::validate_paid_unsigned_network_flags(&parsed)?;
+        } else {
+            super::fastvote_network::validate_paid_network_flags(&parsed)?;
+        }
     }
     let signer_selection: SignerSelection = parse_signer_selection(&parsed)?;
     // A custody selection may only export a reviewed unsigned request. It
@@ -257,10 +279,8 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             expected_public_key,
             ..
         } => {
-            if budget.is_some() || parsed.get("--unsigned-out").is_none() {
-                return Err(invalid(
-                    "custody paid preparation requires --unsigned-out and direct mode",
-                ));
+            if !unsigned_export {
+                return Err(invalid("custody paid preparation requires --unsigned-out"));
             }
             Some(Address::new(*expected_public_key))
         }
@@ -317,6 +337,13 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     } else {
         None
     };
+    if unsigned_export && let Some((_, _, admission)) = &network {
+        let request_id = RequestId::new(decode_hex_32(
+            "--request-id",
+            parsed.require("--request-id")?,
+        )?)?;
+        super::fastvote_network::require_owned_lane(admission, request_id.as_bytes())?;
+    }
     if let Some(budget) = budget {
         budget.ensure_live()?;
     }
@@ -691,6 +718,114 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, CliError::LocalExecution(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsigned_fastvote_preflight_rejects_wrong_owned_lane_from_signed_genesis() {
+        use crypto::SignatureSigner;
+        let protocol = sunrise_edge_devnet::build_devnet_protocol_context(
+            ChainId::new("paid-unsigned-fastvote-lane").unwrap(),
+            Epoch::new(0),
+        )
+        .unwrap();
+        let context = PublicationContext::new(
+            protocol.chain_id().clone(),
+            protocol.resolver().protocol_version(),
+            protocol.epoch(),
+        )
+        .unwrap();
+        let owner = LocalSigner::from_seed([0xA7; 32]);
+        let fee_recipient = LocalSigner::from_seed([0xA8; 32]);
+        let (mut manifest, _) = sunrise_edge_devnet::build_paid_genesis_manifest(
+            protocol.resolver(),
+            &context,
+            &[sunrise_edge_devnet::DevOwner::new(
+                *owner.address().as_bytes(),
+            )],
+            sunrise_edge_devnet::DevOwner::new(*fee_recipient.address().as_bytes()),
+        )
+        .unwrap();
+        manifest.commitment_profile = CommitmentProfile::CausalAdmission;
+        manifest.minimum_freeze_block_height = 1;
+        let authority = LocalSigner::from_seed(sunrise_edge_devnet::DEVNET_PAID_GENESIS_SEED);
+        manifest.signature = authority
+            .sign_framed(&node_core::genesis::genesis_manifest_signing_frame(&manifest).unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let bytes = node_core::genesis::encode_genesis_manifest(&manifest).unwrap();
+        let digest =
+            node_core::genesis::genesis_manifest_commitment(protocol.resolver(), &manifest)
+                .unwrap();
+        let root = sunrise_edge_client::VerifiedGenesisRoot::verify_bytes(
+            protocol.resolver(),
+            &bytes,
+            digest.bytes(),
+            &context,
+        )
+        .unwrap();
+        let admission = root.admission_profile();
+        assert!(
+            super::super::fastvote_network::require_owned_lane(admission, &[0x81; 32]).is_err()
+        );
+        assert!(super::super::fastvote_network::require_owned_lane(admission, &[0x01; 32]).is_ok());
+
+        // The unsigned CLI path must apply that same authenticated rule
+        // before reading a fee source, signing, or creating an export file.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temporary_path("causal-unsigned");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let genesis_path = dir.join("genesis.bin");
+        let network_path = dir.join("network.txt");
+        let unsigned_path = dir.join("unsigned.bin");
+        std::fs::write(&genesis_path, &bytes).unwrap();
+        std::fs::write(
+            &network_path,
+            format!(
+                "{} 127.0.0.1:1 - -\n",
+                manifest.validator_set.validators[0].id
+            ),
+        )
+        .unwrap();
+        let error = run(
+            "paid-call",
+            vec![
+                OsString::from("--endpoint"),
+                OsString::from("127.0.0.1:1"),
+                OsString::from("--expected-chain-id"),
+                OsString::from(protocol.chain_id().as_str()),
+                OsString::from("--expected-protocol-version"),
+                OsString::from(protocol.resolver().protocol_version().get().to_string()),
+                OsString::from("--expected-epoch"),
+                OsString::from("0"),
+                OsString::from("--expected-hash-suite-id"),
+                OsString::from("1"),
+                OsString::from("--expected-domain"),
+                OsString::from(crate::hex::encode_hex(protocol.domain().as_bytes())),
+                OsString::from("--request-id"),
+                OsString::from("81".repeat(32)),
+                OsString::from("--fastvote-network"),
+                network_path.as_os_str().to_owned(),
+                OsString::from("--fastvote-genesis-manifest"),
+                genesis_path.as_os_str().to_owned(),
+                OsString::from("--fastvote-expected-genesis-digest"),
+                OsString::from(crate::hex::encode_hex(&digest.bytes())),
+                OsString::from("--custody-socket"),
+                OsString::from("/no-socket-is-opened"),
+                OsString::from("--custody-uid"),
+                OsString::from("1001"),
+                OsString::from("--custody-expected-public-key"),
+                OsString::from(owner.address().to_string()),
+                OsString::from("--unsigned-out"),
+                unsigned_path.as_os_str().to_owned(),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("wrong admission lane"));
+        assert!(!unsigned_path.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
