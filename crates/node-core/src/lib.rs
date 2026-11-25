@@ -2027,7 +2027,8 @@ impl AuthenticatedSubmitTransaction {
         &self.transaction
     }
 
-    /// Pure first-stage check for an owned, preinstalled-WASM causal candidate.
+    /// Pure first-stage check for a preinstalled-WASM causal candidate in the
+    /// Owned request-ID lane. The lane does not prove object ownership.
     ///
     /// The profile must come from a locally verified signed genesis. This
     /// checks the original request lane and the already signature-verified
@@ -2040,6 +2041,11 @@ impl AuthenticatedSubmitTransaction {
         &self,
         profile: &admission_profile::VerifiedAdmissionProfile,
     ) -> Result<(), NodeCoreError> {
+        if self.transaction.request_bound_id() != Some(self.event.request_id()) {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "causal SubmitTransaction candidate requires a request-bound signature",
+            ));
+        }
         if !profile.is_causal() {
             return Err(NodeCoreError::PersistenceInvariant(
                 "causal SubmitTransaction candidate requires a causal signed genesis",

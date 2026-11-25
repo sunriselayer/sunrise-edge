@@ -9,17 +9,23 @@ application, reconstruction and activation are not.
 
 The first additional causal family is only an authenticated
 `NodeEventKind::SubmitTransaction` executed by the existing preinstalled-WASM
-owner. Its inner `Transaction` has a verified sender signature and access
-manifest, the outer event binds the original request ID and context, and the
-machine declares no opaque application state keys. It requires at least one
+owner. Its inner `Transaction` has a verified profile-2 sender signature over
+the exact outer request ID and access manifest. The authenticated event carries
+the original request ID and context, and the machine declares no opaque
+application state keys. It requires at least one
 authenticated object access and produces no outbound message. Other NodeEvent
 kinds, arbitrary `TransactionalNodeStateMachine` callbacks, and direct
 publication/local/paid endpoints gain no authority from this decision.
 
 The new pure candidate check accepts only a locally verified, signed
 `CausalAdmission` genesis profile for the same chain and protocol version,
-the existing Owned request-ID lane, and a nonempty manifest accepted by the
-owned-object dispatch validator. It performs no store I/O, vote or mutation.
+the existing Owned request-ID lane, a profile-2 transaction signature that
+binds the exact outer request ID, and a nonempty manifest accepted by the
+owned-object dispatch validator. Historical profile 1 signs only the inner
+transaction and cannot qualify, even when its outer event has an Owned-lane
+request ID. The lane partitions request IDs; it does not prove object ownership.
+Ownership remains a store-backed prepare check. The pure check performs no
+store I/O, vote or mutation.
 Current `require_historical_direct_writer` refusal remains unchanged.
 
 ## Certified input, conflict and effect boundary

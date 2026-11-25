@@ -273,6 +273,8 @@ impl<'a> TrustedTransactionContext<'a> {
 pub struct AuthenticatedTransaction {
     transaction: Transaction,
     owner_address_policy: Ed25519OwnerAddressPolicy,
+    /// Present only when the verified signature covered this submission ID.
+    request_bound_id: Option<RequestId>,
 }
 
 impl AuthenticatedTransaction {
@@ -292,6 +294,13 @@ impl AuthenticatedTransaction {
     /// authenticated this transaction.
     pub(crate) const fn owner_address_policy(&self) -> Ed25519OwnerAddressPolicy {
         self.owner_address_policy
+    }
+
+    /// Returns the submission ID covered by the verified profile-2 signature.
+    /// Profile 1 does not bind a submission ID, even when authenticated from
+    /// a `SubmitTransaction` event.
+    pub(crate) const fn request_bound_id(&self) -> Option<RequestId> {
+        self.request_bound_id
     }
 }
 
@@ -441,6 +450,10 @@ fn authenticate_transaction_bytes_internal(
     Ok(AuthenticatedTransaction {
         transaction,
         owner_address_policy,
+        request_bound_id: match profile.address_binding() {
+            AddressBinding::AddressIsPublicKey => None,
+            AddressBinding::CanonicalPrimeOrderAddressIsPublicKey => request_id,
+        },
     })
 }
 

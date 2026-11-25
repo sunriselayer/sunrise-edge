@@ -1037,20 +1037,46 @@ fn causal_owned_preinstalled_candidate_checks_verified_lane_and_nonempty_manifes
         b"node/state".to_vec(),
     )
     .unwrap();
-    let protocol_config = active_protocol_config(0xD8);
+    let legacy_protocol_config = active_protocol_config(0xD8);
+    let mut protocol_config = legacy_protocol_config.clone();
+    protocol_config.transaction_auth_profile = Some(
+        TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key(),
+    );
     let signing_key = dev_signing_key(0x71);
     let manifest = manifest_with(vec![AccessEntry {
         object_ref: sample_object_ref(0x11),
         mode: AccessMode::Write,
     }]);
+    let legacy_candidate = authenticated_submission_with_manifest(
+        "genesis-test",
+        request(0x10),
+        &signing_key,
+        Epoch::new(0),
+        0,
+        manifest.clone(),
+        &config,
+        &legacy_protocol_config,
+    );
+    assert_eq!(
+        legacy_candidate.require_causal_owned_preinstalled_candidate(&causal),
+        Err(NodeCoreError::PersistenceInvariant(
+            "causal SubmitTransaction candidate requires a request-bound signature"
+        ))
+    );
     let candidate = |id: u8, accesses: AccessManifest| {
-        authenticated_submission_with_manifest(
+        let transaction = unsigned_transaction_with_manifest(
+            dev_sender_address(&signing_key),
+            ChainId::new("genesis-test").unwrap(),
+            Epoch::new(0),
+            0,
+            accesses,
+        );
+        authenticated_profile_2_submission_from_transaction(
             "genesis-test",
             request(id),
             &signing_key,
             Epoch::new(0),
-            0,
-            accesses,
+            transaction,
             &config,
             &protocol_config,
         )
@@ -1082,13 +1108,19 @@ fn causal_owned_preinstalled_candidate_checks_verified_lane_and_nonempty_manifes
         b"node/state".to_vec(),
     )
     .unwrap();
-    let foreign = authenticated_submission_with_manifest(
+    let foreign_transaction = unsigned_transaction_with_manifest(
+        dev_sender_address(&signing_key),
+        ChainId::new("sunrise-test").unwrap(),
+        Epoch::new(0),
+        0,
+        manifest.clone(),
+    );
+    let foreign = authenticated_profile_2_submission_from_transaction(
         "sunrise-test",
         request(0x14),
         &signing_key,
         Epoch::new(0),
-        0,
-        manifest.clone(),
+        foreign_transaction,
         &foreign_config,
         &protocol_config,
     );
