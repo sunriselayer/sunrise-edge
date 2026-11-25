@@ -2026,6 +2026,51 @@ impl AuthenticatedSubmitTransaction {
     pub const fn transaction(&self) -> &AuthenticatedTransaction {
         &self.transaction
     }
+
+    /// Pure first-stage check for an owned, preinstalled-WASM causal candidate.
+    ///
+    /// The profile must come from a locally verified signed genesis. This
+    /// checks the original request lane and the already signature-verified
+    /// manifest shape without storage, execution, signing, or mutation. It is
+    /// not a certificate, an installed-profile fence, or a write capability:
+    /// the existing direct handler still refuses fresh causal work. A future
+    /// certified prepare must independently fence the installed root, epoch,
+    /// nonce and precise object locks before voting.
+    pub fn require_causal_owned_preinstalled_candidate(
+        &self,
+        profile: &admission_profile::VerifiedAdmissionProfile,
+    ) -> Result<(), NodeCoreError> {
+        if !profile.is_causal() {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "causal SubmitTransaction candidate requires a causal signed genesis",
+            ));
+        }
+        if self.event.chain_id() != profile.context().chain_id() {
+            return Err(NodeCoreError::ChainMismatch {
+                expected: profile.context().chain_id().clone(),
+                actual: self.event.chain_id().clone(),
+            });
+        }
+        if self.event.protocol_version() != profile.context().protocol_version() {
+            return Err(NodeCoreError::ProtocolVersionMismatch {
+                expected: profile.context().protocol_version(),
+                actual: self.event.protocol_version(),
+            });
+        }
+        admission_profile::require_external_request_lane(
+            profile,
+            admission_profile::ExternalRequestLane::Owned,
+            self.event.request_id().as_bytes(),
+        )?;
+        let accesses = AuthenticatedObjectDispatch::from_authenticated_transaction(
+            &self.transaction,
+            AuthenticatedObjectPolicy::OwnedCandidate,
+        )?;
+        if accesses.accesses.is_empty() {
+            return Err(NodeCoreError::PreinstalledModuleZeroObjectAccess);
+        }
+        Ok(())
+    }
 }
 
 /// Authenticates one `SubmitTransaction` event before any machine or storage
@@ -2155,7 +2200,11 @@ struct AuthenticatedObjectDispatch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AuthenticatedObjectPolicy {
     ReadOnly,
-    OwnedMutations { created_checkpoint: u64 },
+    /// Pure manifest-shape check only; the durable handler must reject it.
+    OwnedCandidate,
+    OwnedMutations {
+        created_checkpoint: u64,
+    },
 }
 
 impl AuthenticatedObjectDispatch {
@@ -4730,6 +4779,11 @@ where
     }
     let created_checkpoint: Option<u64> = match object_policy {
         AuthenticatedObjectPolicy::ReadOnly => None,
+        AuthenticatedObjectPolicy::OwnedCandidate => {
+            return Err(NodeCoreError::PersistenceInvariant(
+                "pure owned candidate has no durable mutation authority",
+            ));
+        }
         AuthenticatedObjectPolicy::OwnedMutations { created_checkpoint } => {
             Some(created_checkpoint)
         }

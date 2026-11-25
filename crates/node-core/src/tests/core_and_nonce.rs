@@ -1008,6 +1008,116 @@ fn authenticate_submit_transaction_event_happy_path_authenticates_transaction() 
     }
 }
 
+#[test]
+fn causal_owned_preinstalled_candidate_checks_verified_lane_and_nonempty_manifest() {
+    use crate::genesis::{
+        VerifiedGenesisRoot, encode_genesis_manifest, genesis_manifest_commitment,
+    };
+    use crate::genesis::tests::{causal_bonded_manifest, freeze_bonded_manifest};
+
+    let profile = |manifest: crate::genesis::GenesisManifest| {
+        let resolver = crate::genesis::tests::resolver();
+        let digest = genesis_manifest_commitment(&resolver, &manifest).unwrap();
+        VerifiedGenesisRoot::verify_bytes(
+            &resolver,
+            &encode_genesis_manifest(&manifest).unwrap(),
+            digest.bytes(),
+            manifest.context(),
+        )
+        .unwrap()
+        .admission_profile()
+        .clone()
+    };
+    let causal = profile(causal_bonded_manifest());
+    let historical = profile(freeze_bonded_manifest());
+    let config = NodeConfig::new(
+        crate::genesis::tests::chain(),
+        ProtocolVersion::new(3),
+        Epoch::new(0),
+        b"node/state".to_vec(),
+    )
+    .unwrap();
+    let protocol_config = active_protocol_config(0xD8);
+    let signing_key = dev_signing_key(0x71);
+    let manifest = manifest_with(vec![AccessEntry {
+        object_ref: sample_object_ref(0x11),
+        mode: AccessMode::Write,
+    }]);
+    let candidate = |id: u8, accesses: AccessManifest| {
+        authenticated_submission_with_manifest(
+            "genesis-test",
+            request(id),
+            &signing_key,
+            Epoch::new(0),
+            0,
+            accesses,
+            &config,
+            &protocol_config,
+        )
+    };
+    assert!(
+        candidate(0x11, manifest.clone())
+            .require_causal_owned_preinstalled_candidate(&causal)
+            .is_ok()
+    );
+    assert!(
+        candidate(0x91, manifest.clone())
+            .require_causal_owned_preinstalled_candidate(&causal)
+            .is_err()
+    );
+    assert!(
+        candidate(0x12, manifest.clone())
+            .require_causal_owned_preinstalled_candidate(&historical)
+            .is_err()
+    );
+    assert_eq!(
+        candidate(0x13, AccessManifest::new())
+            .require_causal_owned_preinstalled_candidate(&causal),
+        Err(NodeCoreError::PreinstalledModuleZeroObjectAccess)
+    );
+    let foreign_config = NodeConfig::new(
+        ChainId::new("sunrise-test").unwrap(),
+        ProtocolVersion::new(3),
+        Epoch::new(0),
+        b"node/state".to_vec(),
+    )
+    .unwrap();
+    let foreign = authenticated_submission_with_manifest(
+        "sunrise-test",
+        request(0x14),
+        &signing_key,
+        Epoch::new(0),
+        0,
+        manifest.clone(),
+        &foreign_config,
+        &protocol_config,
+    );
+    assert!(matches!(
+        foreign.require_causal_owned_preinstalled_candidate(&causal),
+        Err(NodeCoreError::ChainMismatch { .. })
+    ));
+    let store = ScriptedDurableStore::new(DurableCommitOutcome::Committed);
+    let machine = IdempotentMachine {
+        calls: AtomicUsize::new(0),
+    };
+    let error = handle_authenticated_submit_transaction_with_policy(
+        &MemoryBlobStore::default(),
+        &store,
+        &durable_context(),
+        &crate::genesis::tests::resolver(),
+        candidate(0x15, manifest),
+        &machine,
+        AuthenticatedObjectPolicy::OwnedCandidate,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        NodeCoreError::PersistenceInvariant("pure owned candidate has no durable mutation authority")
+    );
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
+    assert!(store.commits.lock().unwrap().is_empty());
+}
+
 /// DR-0131: the established object-read-only `SubmitTransaction` entrypoint
 /// still advances a sender nonce, so it must honor a fast-path prepare's
 /// sender/epoch nonce lock even though it never mutates an object.
