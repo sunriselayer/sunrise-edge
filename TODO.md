@@ -4,13 +4,14 @@
 
 ## 公開ベータ: 先に進める範囲
 
-実資産を扱わない実験的な公開ベータを先に進める。利用者の署名済み有料取引は既存のFastVote prepare/quorum/apply経路で受け、参照とFastVoteの管理・drain操作も公開対象とする。`/v1/events`はこのベータの必須経路にしない。資産・状態はリセット可能なテスト用とし、停止や再開、未対応機能を利用者へ明示する。下の元11件は本番・完全releaseの条件として保持し、ベータの公開判定にはその一括完了を要求しない。ベータの結果をM2/M3/M7や本番公開の合格に転用しない。
+実資産を扱う公開ベータを先に進める。利用者の署名済み有料取引は既存のFastVote prepare/quorum/apply経路で受け、参照とFastVoteの管理・drain操作も公開対象とする。`/v1/events`はこのベータの必須経路にしない。ベータでも実資産の状態をリセット・巻き戻しできる前提にしない。下の元11件の完全release資格は別に保持しつつ、実資産を扱う選択済みprofileに必要な鍵保護・復旧・監査・実配置の条件はこのベータでも満たす。現行の[security policy](SECURITY.md)は実資産custodyとcertified surfaceの公開をまだ認めておらず、証拠を揃えて公開前に改訂する。
 
-- [x] 公開ベータの目標と経路を決めた（2026-11-25）。既存の`sqlite_source_host`とcertified relayは、署名済み有料取引・参照・FastVote管理を同じcertified profileで扱える。現行の単一validator devnetはloopback専用で公開禁止。既存componentの存在は実配置の公開資格にはならない。
-- [ ] 既存のcertified profileをベータ用に固定し、validatorごとのhostと公開入口を実際に構成する。固定chain/context、TLS、閉じた経路、要求量・同時実行の上限、停止手段を持たせ、開発用devnetをそのまま公開しない。
-- [ ] 公開到達する経路を限定して独立にsecurity reviewし、既知の非公開指摘を修正・再確認する。候補sourceのowning checksと通常PRの全7 CI lane・集約`check`を成功させる。
-- [ ] 公開予定の実構成で外部clientから取引送信・receipt/nonce/参照・FastVote操作、重複/不明結果、上限、停止/同じデータでの再開を確認し、結果を保存する。
-- [ ] 実際のendpoint、テスト用chain/asset、公開する操作、監視と停止手順を記録し、人がベータ公開のgo/no-goを決める。
+- [x] 公開ベータの目標と経路を決めた（2026-11-25、実資産を含む）。既存の`sqlite_source_host`とcertified relayは、署名済み有料取引・参照・FastVote管理を同じcertified profileで扱える。現行の単一validator devnetはloopback専用で公開禁止。既存componentの存在は実配置の公開資格にはならない。
+- [ ] 実資産ベータのchain/genesis、validatorと運営・承認担当、asset/economics、対応操作、正確なsource/artifactを一つに固定し、公開するpaid Publish/Instantiate/CallとStandard Asset操作の保護鍵・内容確認・鍵喪失時の復旧/取消を実際に通す。M2/D04/D06/M6の選択範囲を共用する。
+- [ ] 既存のcertified profileでvalidatorごとのhostと公開入口を構成する。TLS、非公開upstream認証、閉じた経路、要求量・同時実行の上限、停止手段を持たせる。公開到達経路を独立にsecurity reviewし、既知の非公開指摘を修正・再確認する。
+- [ ] 選択済みSQLite profileの実host/media/fsyncで停止・同じ状態からの再開、receipt/nonce/署名済み取引のexact replay、別hostのbackup復旧・writer failover/fenceを確認する。未確定の結果や資産状態を巻き戻さない。M3/D07の選択範囲を共用する。
+- [ ] 候補sourceのowning checksと通常PRの全7 CI lane・集約`check`を成功させ、選択したNative/SQLite RELEASE artifactの再ビルド・実行結果を保存する。実際の構成で外部clientから取引・参照・FastVote操作、重複/不明結果、負荷上限、停止/再開を確認する。完全releaseの13 Native targetsは別のM7条件として保持する。
+- [ ] 実endpointとasset、監視・停止・復旧手順、残余リスクを記録し、実資産を受ける前に[security policy](SECURITY.md)を実態に合わせて改訂して人がベータのgo/no-goを決める。D08/M8の実操作承認を共用する。
 
 ## コード・検証: 親5件
 
@@ -34,11 +35,13 @@
 - [ ] **M2: protected signerと操作内容レビューを実装・検証する**
   - 必須範囲: 保護された鍵backend、operator/authority分離、操作ごとの正確な内容確認、拒否・故障、必要な復旧・交換・取消。自動protocol署名と人のasset/governance承認を分ける。
   - 初期release対象の選択（2026-11-13）: 既存の選択済みfamilyに限定する。generic local/general・paidとFinalTransferは初期release対象外の将来範囲として残し、実装・検証完了とは数えない。
+  - 2026-11-25の実資産公開ベータは別の選択であり、公開certified経路から到達するgeneric paid Publish/Instantiate/CallとStandard Asset paid操作を含む。現行CLIのgeneric paidはdevelopment seedを使いcustodyを拒否するため、この経路を実資産向けに保護・検証するまでベータの受入は未達。FinalTransferは引き続き対象外。
   - 完了済みの小項目は下のチェックで保持する。各結果のsource/profileと限界は[旧TODO][historical-todo]と[signing contracts](docs/architecture/signing-preparation.md)を参照する。個別合格を全familyの資格に転用しない。
   - 残件: original bondの局所観測と承認・署名前の反復照会はPR #362で実装済み、実hostと保護署名の限定結合も下の小項目で検証済み。選択済みfamilyのlifecycleと元ownerの対応付けは[照合表](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)で整理済み。同一sourceの実UID/RELEASE全体資格、実承認者/鍵enrollmentとM2親の受入は未達。対象外の全prepared型や全identity移行を新しい必須条件にしない。
   - [x] 初期対象を選択済みfamilyに限定し、lifecycleと検証ownerを[対応付けた](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)。
   - [x] 下のZeroShare componentのコードを[PR #381](https://github.com/sunriselayer/sunrise-edge/pull/381)でmainへ統合し、限定資格を下のCI結果で確認した。
   - [ ] 選択済みfamilyを実UID/RELEASEと実承認者・保護鍵で通し、最終reviewを終える。
+  - [ ] 実資産ベータで公開するgeneric paid操作の保護署名・内容確認・復旧/取消を実承認者と実鍵で通す。
   - [x] **publicationの保護承認と取消・同一鍵復旧・交換component**: [専用custody](docs/architecture/local-publication-custody.md)と[lifecycle](docs/architecture/publication-custody-lifecycle.md)の既存実UID/PTY/拒否・restart結果に限定する。
   - [x] **genesis Standard Assetのtransfer・split/merge・mint/burn・create component**: [transfer](docs/architecture/standard-asset-transfer-custody.md)、[split/merge](docs/architecture/standard-asset-split-merge-custody.md)、[mint/burn](docs/architecture/standard-asset-mint-burn-custody.md)、[create](docs/architecture/standard-asset-create-asset-custody.md)の実CLI・別UID結果と、旧TODOに記録した限定復旧・live Coin handoffを含む。
   - [x] **own-created application asset/Coinの操作と限定復旧component**: [application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md)のmint/burnと[Coin custody](docs/architecture/standard-asset-application-coin-custody.md)のCoin操作・kind2/3 historical recoveryを既存profileで検証済み。
@@ -100,7 +103,7 @@
 
 これらは実役割・実値・実環境・公開権限の条件であり、fixture値やlocal Docker/loopbackの合格とは分ける。
 
-作業順（2026-11-25）: 上の公開ベータを先行する。D04/D06/D07/D08/M6/M8の本番準備と元の完了条件は保持し、ベータの前提として一括実施しない。未確定の実運用情報を既存資料の提出待ちにはしない。
+作業順（2026-11-25）: 上の実資産公開ベータを先行する。D04/D06/D07/D08/M6/M8のうち選択済み実profileに必要な担当・値・復旧・承認をベータでも通し、元の完全release条件は別に保持する。未確定の実運用情報を既存資料の提出待ちにはしない。
 
 - [ ] **D04: 実validator・custody/admin役割とrelease profileを選ぶ**: 独立operators、real genesis/chain pins、economics、supported routes、exact release artifactを固定する。Native+SQLite firstの技術選択だけでは足りない。
   - [ ] operatorsとcustody/admin担当を決める。
@@ -140,8 +143,8 @@
    記録する。startup 0、check件数、hash/countだけはsemantic/runtime合格ではない。
    失われたrawを現在存在するものとしてリンクせず、回収可否と証拠の限界を明記する。
 7. 正常なmergeは該当する元の条件を満たした後だけ。squash/rebase/forceや
-   未認定release/main mergeを行わない。本番公開許可はD08/M8、限定された
-   公開ベータは上記の実構成確認と人のgo/no-goで別に判断する。
+   未認定release/main mergeを行わない。実資産の公開ベータは上記の選択範囲と
+   D08/M8の実操作承認を通して判断し、完全releaseの親資格と区別する。
 
 [Validation profiles](docs/architecture/repository-validation.md)と
 [元production gate](docs/development/history/roadmap-through-2026-10-06.md#cli-first-node-production-gate)
