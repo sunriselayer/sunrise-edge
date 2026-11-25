@@ -1730,7 +1730,7 @@ pub(crate) fn admit_generic_transition<S: VersionedStateReader + ?Sized>(
     fenced: &BTreeMap<Vec<u8>, StateRevision>,
     state_mutations: &mut Vec<StateMutationEntry>,
     reads: &mut Vec<StateReadAssertion>,
-) -> Result<(), NodeCoreError> {
+) -> Result<LogicalAdmission, NodeCoreError> {
     let mut working: BTreeMap<Vec<u8>, StateRevision> = reads
         .iter()
         .map(|assertion| (assertion.key().to_vec(), assertion.expected_revision()))
@@ -1757,14 +1757,14 @@ pub(crate) fn admit_generic_transition<S: VersionedStateReader + ?Sized>(
         &mut working,
     )?;
     if admitted.derived.is_none() {
-        return Ok(());
+        return Ok(admitted);
     }
     for (key, revision) in working {
         if !existing.contains(&key) {
             reads.push(StateReadAssertion::new(key, revision)?);
         }
     }
-    Ok(())
+    Ok(admitted)
 }
 
 /// Which rule bounds one observed object's semantic monotonicity.
