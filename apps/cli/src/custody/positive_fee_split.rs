@@ -3,8 +3,9 @@ use super::positive_fee_split_approvals::{self as approvals, Content};
 use super::positive_fee_split_wire::{self as wire, Request};
 use super::{config::CustodyConfig, error::CustodyError};
 use crate::positive_fee_claim_split::{
-    HistoricalClaimantPin, PreparedPositiveSplitClaim, PreparedPositiveSplitLeg,
-    SignedPositiveSplitLeg, StandardAssetPositiveSplitPolicy,
+    HistoricalClaimantPin, PreparedFinalTransferClaim, PreparedFinalTransferLeg,
+    PreparedPositiveSplitClaim, PreparedPositiveSplitLeg, SignedFinalTransferLeg,
+    SignedPositiveSplitLeg, StandardAssetFinalTransferPolicy, StandardAssetPositiveSplitPolicy,
 };
 use std::{
     path::Path,
@@ -108,6 +109,9 @@ impl PositiveFeeSplitTrust {
     }
 
     pub(super) fn prepare(&self, request: &Request) -> Result<Prepared<'_>, CustodyError> {
+        if matches!(request, Request::FinalLeg(_) | Request::FinalClaim { .. }) {
+            return self.prepare_final(request);
+        }
         let policy: StandardAssetPositiveSplitPolicy<'_> =
             StandardAssetPositiveSplitPolicy::new(&self.workflow, self.claimant)
                 .map_err(rejected)?;
@@ -151,6 +155,57 @@ impl PositiveFeeSplitTrust {
                     owner: Owner::Claim(Box::new(claim)),
                 })
             }
+            Request::FinalLeg(_) | Request::FinalClaim { .. } => {
+                Err(CustodyError::PositiveSplitRejected)
+            }
+        }
+    }
+
+    fn prepare_final(&self, request: &Request) -> Result<Prepared<'_>, CustodyError> {
+        let policy: StandardAssetFinalTransferPolicy<'_> =
+            StandardAssetFinalTransferPolicy::new(&self.workflow, self.claimant)
+                .map_err(rejected)?;
+        let leg: PreparedFinalTransferLeg<'_> = policy
+            .prepare_leg(request.leg().terms.clone(), request.leg().object.clone())
+            .map_err(rejected)?;
+        let leg_request: Request = Request::FinalLeg(request.leg().clone());
+        let leg_content: Content = self.binding(
+            &leg_request,
+            leg.review().render_text(),
+            leg.signable_frame(),
+        )?;
+        match request {
+            Request::FinalLeg(_) => Ok(Prepared {
+                content: leg_content,
+                leg_content: None,
+                owner: Owner::FinalLeg(Box::new(leg)),
+            }),
+            Request::FinalClaim {
+                signed_leg,
+                request: saved_request,
+                intent,
+                ..
+            } => {
+                let decoded: sunrise_edge_client::local_execution::SignedLocalExecutionIntent =
+                    sunrise_edge_client::local_execution::decode_signed_local_execution(signed_leg)
+                        .map_err(rejected)?;
+                let signed: SignedFinalTransferLeg<'_> =
+                    leg.finalize(decoded.signature.to_vec()).map_err(rejected)?;
+                if signed.canonical_signed_leg() != signed_leg.as_slice() {
+                    return Err(CustodyError::PositiveSplitRejected);
+                }
+                let claim: PreparedFinalTransferClaim<'_> = signed
+                    .prepare_claim(saved_request, intent)
+                    .map_err(rejected)?;
+                let content: Content =
+                    self.binding(request, claim.review_text(), claim.signable_frame())?;
+                Ok(Prepared {
+                    content,
+                    leg_content: Some(leg_content),
+                    owner: Owner::FinalClaim(Box::new(claim)),
+                })
+            }
+            Request::Leg(_) | Request::Claim { .. } => Err(CustodyError::PositiveSplitRejected),
         }
     }
 
@@ -207,6 +262,8 @@ impl PositiveFeeSplitTrust {
 enum Owner<'a> {
     Leg(Box<PreparedPositiveSplitLeg<'a>>),
     Claim(Box<PreparedPositiveSplitClaim<'a>>),
+    FinalLeg(Box<PreparedFinalTransferLeg<'a>>),
+    FinalClaim(Box<PreparedFinalTransferClaim<'a>>),
 }
 pub(super) struct Prepared<'a> {
     pub(super) content: Content,
@@ -235,6 +292,12 @@ impl Prepared<'_> {
                 Ok(signed.canonical_signed_leg().to_vec())
             }
             Owner::Claim(claim) => (*claim).finalize(signature).map_err(rejected),
+            Owner::FinalLeg(leg) => {
+                let signed: SignedFinalTransferLeg<'_> =
+                    (*leg).finalize(signature).map_err(rejected)?;
+                Ok(signed.canonical_signed_leg().to_vec())
+            }
+            Owner::FinalClaim(claim) => (*claim).finalize(signature).map_err(rejected),
         }
     }
 }

@@ -127,6 +127,7 @@ impl Fixture {
             self.claimant,
             terms,
             object,
+            RecognizedLegKind::StrictSplit,
         )
     }
     fn reencode(&self, object: Object) -> RetainedFeeObject {
@@ -259,6 +260,107 @@ fn positive_amount_nonce_gas_recipient_and_object_refusals_leave_inputs_intact()
 }
 
 #[test]
+fn final_transfer_requires_whole_coin_and_retains_independent_transfer_frame() {
+    let f: Fixture = Fixture::new();
+    let mut terms: PositiveSplitTerms = f.terms.clone();
+    terms.amount = 100;
+    let prepared: PreparedLocalExecution = prepare_recognized_leg(
+        &f.known,
+        &f.resolver,
+        &f.context,
+        f.domain,
+        f.claimant,
+        &terms,
+        &f.object,
+        RecognizedLegKind::FinalTransfer,
+    )
+    .unwrap();
+    let policy: LocalExecutionPolicy =
+        LocalExecutionPolicy::generic_object_results(f.context.clone());
+    let legacy: LocalExecutionIntent = LocalExecutionIntent {
+        mode: LocalExecutionMode::Call,
+        policy_digest: policy.digest(&f.resolver).unwrap(),
+        call: CallIntent {
+            context: f.context.clone(),
+            request_id: terms.request_id,
+            sender: *f.claimant.public_key.as_bytes(),
+            nonce: terms.nonce,
+            code: f.known.code.clone(),
+            instance: f.known.scope.target.clone(),
+            entrypoint: "transfer".into(),
+            type_arguments: f.known.coin.args().to_vec(),
+            access: AccessManifest {
+                entries: vec![AccessEntry {
+                    object_ref: f.object.reference.clone(),
+                    mode: AccessMode::Write,
+                }],
+            },
+            arguments: public_standard_asset::transfer_arguments(terms.recipient.as_bytes())
+                .unwrap(),
+            gas_limit: terms.gas_limit,
+        },
+        authorizations: Vec::new(),
+    };
+    let frame: Vec<u8> = local_execution_signing_frame(&f.context, &legacy).unwrap();
+    assert_eq!(prepared.signable_frame(), frame);
+    let signature: Vec<u8> = f.signer.sign_framed(&frame).unwrap();
+    let signed: SignedLocalExecutionIntent = prepared.finalize(signature.clone()).unwrap();
+    assert_eq!(signed.intent, legacy);
+    assert_eq!(signed.signature.as_slice(), signature);
+    let review: FinalTransferMeaning = FinalTransferMeaning::build(
+        f.claimant,
+        f.context.clone(),
+        *f.known.code.artifact_digest(),
+        *f.known.code.artifact_digest(),
+        &f.known,
+        &terms,
+        &f.object,
+        &frame,
+    )
+    .unwrap();
+    assert!(review.render_text().contains("entrypoint=transfer"));
+    assert!(review.render_text().contains("retained_remainder=0"));
+    assert!(
+        review
+            .render_text()
+            .contains(&crate::hex::encode_hex(&frame))
+    );
+
+    for amount in [0, 17, 99, 101] {
+        terms.amount = amount;
+        assert!(
+            prepare_recognized_leg(
+                &f.known,
+                &f.resolver,
+                &f.context,
+                f.domain,
+                f.claimant,
+                &terms,
+                &f.object,
+                RecognizedLegKind::FinalTransfer,
+            )
+            .is_err()
+        );
+    }
+    terms.amount = 100;
+    let mut changed: RetainedFeeObject = f.object.clone();
+    changed.reference.version += 1;
+    assert!(
+        prepare_recognized_leg(
+            &f.known,
+            &f.resolver,
+            &f.context,
+            f.domain,
+            f.claimant,
+            &terms,
+            &changed,
+            RecognizedLegKind::FinalTransfer,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn exact_custody_owner_resource_type_and_scope_are_required() {
     let f: Fixture = Fixture::new();
     let source: Object = decode_object(&f.object.canonical_bytes).unwrap();
@@ -293,7 +395,8 @@ fn exact_custody_owner_resource_type_and_scope_are_required() {
             f.domain,
             f.claimant,
             &f.terms,
-            &f.object
+            &f.object,
+            RecognizedLegKind::StrictSplit,
         )
         .is_err()
     );

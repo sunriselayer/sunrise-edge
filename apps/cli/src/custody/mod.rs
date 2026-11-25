@@ -33,6 +33,9 @@
 //! - `custody serve-fee-split` uses DR-0269's closed kind-6 Leg/Claim
 //!   owner, genuine successor workflow and original historical key. Its two
 //!   complete phase approvals share the existing permanent request tombstone.
+//! - `custody serve-fee-final-transfer` uses DR-0297's separate kind-6 phase
+//!   3/4 full-balance transfer owner. Each worker refuses the other's phases;
+//!   both phase approvals use the same permanent request tombstone.
 //! - `custody approve-fee-claim`/`serve-fee-claim` use the same owner with
 //!   the DR-0257 protected ZeroShare fee-claim policy, under one closed
 //!   kind-7 decoder; see `fee_claim_zero`. There is no `sign-fee-claim`
@@ -212,6 +215,21 @@ where
             positive_fee_split_commands::sign(args, positive_fee_split_wire::Phase::Claim)
         }
         "serve-fee-split" => positive_fee_split_commands::serve(args),
+        "prepare-fee-final-leg" => positive_fee_split_commands::prepare_final_leg(args),
+        "prepare-fee-final-claim" => positive_fee_split_commands::prepare_final_claim(args),
+        "approve-fee-final-leg" => {
+            positive_fee_split_commands::approve(args, positive_fee_split_wire::Phase::FinalLeg)
+        }
+        "approve-fee-final-claim" => {
+            positive_fee_split_commands::approve(args, positive_fee_split_wire::Phase::FinalClaim)
+        }
+        "sign-fee-final-leg" => {
+            positive_fee_split_commands::sign(args, positive_fee_split_wire::Phase::FinalLeg)
+        }
+        "sign-fee-final-claim" => {
+            positive_fee_split_commands::sign(args, positive_fee_split_wire::Phase::FinalClaim)
+        }
+        "serve-fee-final-transfer" => positive_fee_split_commands::serve_final(args),
         "prepare-bond-inner" => bond_commands::prepare_inner(args),
         "prepare-bond-outer" => bond_commands::prepare_outer(args),
         "approve-bond-inner" => bond_commands::approve(args, bond_wire::BondPhase::Inner),
