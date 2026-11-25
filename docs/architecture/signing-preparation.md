@@ -71,6 +71,19 @@ are not semantic approval or current-row proof. This adds no protected fee-claim
 backend or publication-custody permission; [DR-0245](decisions/0245-saved-successor-fee-claim-review.md)
 records the exact boundary.
 
+## Generic paid intent review component
+
+`PaidExecutionReview` consumes one immutable `PreparedPaidExecution` and
+rechecks its canonical intent, fee-policy digest, sender and exact signing
+frame. Its bounded summary covers fee consent and the selected
+Publish/Instantiate/Call content; the full canonical intent, policy and frame
+remain available for exact-byte comparison. Opaque call arguments and
+authorizations are shown as canonical hex. Large content refuses review
+instead of truncating. This is a non-authorizing SDK component: it neither
+checks live fee-source currentness or code/instance provenance nor connects
+the generic paid CLI to protected custody. Those steps remain necessary
+before generic paid signing can use a protected key.
+
 ## Separate M2 requirements
 
 Mechanical signature validity is not independent human content review. When a

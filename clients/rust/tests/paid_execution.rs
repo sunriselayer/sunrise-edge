@@ -85,6 +85,69 @@ fn prepared_paid_families_preserve_independent_original_bytes() {
     }
 }
 
+#[test]
+fn paid_review_binds_all_three_operations_to_the_prepared_bytes() {
+    let request_id = RequestId::new([0x42; 32]).unwrap();
+    let call = instantiate_call(*request_id.as_bytes(), 4, 100_000);
+    for (operation, application) in [
+        ("call", PaidApplication::Call(call.clone())),
+        ("instantiate", PaidApplication::Instantiate(call)),
+        ("publish", PaidApplication::Publish(artifact())),
+    ] {
+        let prepared = PreparedPaidExecution::prepare(
+            signer().address(),
+            &resolver(),
+            &expected(),
+            &fee_policy(),
+            consent(),
+            application,
+            request_id,
+            4,
+            100_000,
+            vec![],
+        )
+        .unwrap();
+        let review = PaidExecutionReview::build(&prepared).unwrap();
+        assert!(review.text().contains(&format!("operation={operation}\n")));
+        assert!(review.text().contains("max_fee="));
+        assert!(review.text().contains("fee_policy_digest="));
+        assert!(review.text().len() <= MAX_PAID_REVIEW_BYTES);
+        assert_eq!(
+            review.intent_bytes(),
+            encode_paid_intent(prepared.intent()).unwrap()
+        );
+        assert_eq!(
+            review.policy_bytes(),
+            encode_paid_fee_policy(prepared.fee_policy()).unwrap()
+        );
+        assert_eq!(review.frame_bytes(), prepared.signable_frame());
+    }
+}
+
+#[test]
+fn paid_review_refuses_unbounded_opaque_arguments_without_truncation() {
+    let request_id = RequestId::new([0x42; 32]).unwrap();
+    let mut call = instantiate_call(*request_id.as_bytes(), 4, 100_000);
+    call.arguments = vec![0xAA; 64 * 1024];
+    let prepared = PreparedPaidExecution::prepare(
+        signer().address(),
+        &resolver(),
+        &expected(),
+        &fee_policy(),
+        consent(),
+        PaidApplication::Call(call),
+        request_id,
+        4,
+        100_000,
+        vec![],
+    )
+    .unwrap();
+    assert!(matches!(
+        PaidExecutionReview::build(&prepared),
+        Err(PaidExecutionReviewError::TooLarge)
+    ));
+}
+
 fn prepared_publish_with(
     policy: &PaidFeePolicy,
     consent: FeeSourceConsent,
