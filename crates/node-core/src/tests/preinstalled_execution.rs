@@ -900,6 +900,63 @@ fn preinstalled_wasm_owned_write_commits_object_nonce_and_receipt() {
     let engine = WasmExecutionEngine;
     let blob_store: MemoryBlobStore = MemoryBlobStore::default();
 
+    let (staged_domain, staged) = stage_preinstalled_submit_invocation(
+        &blob_store,
+        &store,
+        &context,
+        &hash_resolver,
+        &catalog,
+        &engine,
+        submission.clone(),
+        9,
+        None,
+    )
+    .unwrap();
+    let staged_output = match staged {
+        StagedDurableEventOutcome::Fresh {
+            invocation,
+            output,
+            pending_blobs,
+            ..
+        } => {
+            assert_eq!(invocation.domain(), object_domain);
+            assert_eq!(
+                invocation.receipt().request_id().as_bytes(),
+                request(0xF0).as_bytes()
+            );
+            assert_eq!(invocation.object_changes().mutations().len(), 1);
+            assert!(invocation.outbox().is_none());
+            assert!(pending_blobs.is_empty());
+            output
+        }
+        StagedDurableEventOutcome::Replayed(_) => panic!("fresh event was a replay"),
+    };
+    assert_eq!(staged_domain, object_domain);
+    assert_eq!(
+        store
+            .get_object_head(&context, object_domain, write_id)
+            .unwrap()
+            .object_version(),
+        DurableObjectVersion::new(1)
+    );
+    assert!(
+        store
+            .get_versioned_durable(
+                &context,
+                object_domain,
+                &sender_nonce_key_for("sunrise-test", *sender.as_bytes(), Epoch::new(7)),
+            )
+            .unwrap()
+            .value()
+            .is_none()
+    );
+    assert_eq!(
+        query_request_receipt(&store, &context, object_domain, request(0xF0)).unwrap(),
+        ReceiptQueryResult::Absent {
+            request_id: request(0xF0),
+        }
+    );
+
     let resolved =
         handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution(
             &blob_store,
@@ -913,6 +970,8 @@ fn preinstalled_wasm_owned_write_commits_object_nonce_and_receipt() {
             None,
         )
         .unwrap();
+
+    assert_eq!(staged_output, *resolved.output());
 
     assert_eq!(resolved.output().responses().len(), 1);
     assert_eq!(
@@ -1386,6 +1445,22 @@ fn preinstalled_wasm_exact_replay_does_not_reexecute_or_reapply() {
     // resolution, object load, checkpoint validation, or execution.
     let empty_catalog: PreinstalledModuleCatalog =
         PreinstalledModuleCatalog::new(Vec::new()).unwrap();
+    let (_, staged_replay) = stage_preinstalled_submit_invocation(
+        &MemoryBlobStore::default(),
+        &store,
+        &context,
+        &hash_resolver,
+        &empty_catalog,
+        &engine,
+        replay_submission.clone(),
+        999,
+        None,
+    )
+    .unwrap();
+    match staged_replay {
+        StagedDurableEventOutcome::Replayed(output) => assert_eq!(output, *first.output()),
+        StagedDurableEventOutcome::Fresh { .. } => panic!("committed receipt became fresh"),
+    }
     let replay =
         handle_authenticated_resolved_durable_submit_transaction_with_preinstalled_wasm_execution(
             &MemoryBlobStore::default(),

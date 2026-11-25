@@ -1196,6 +1196,52 @@ fn authenticated_owned_write_large_update_publishes_and_references_blob() {
     };
     preload_fastpath_epoch_record(&store, "sunrise-test", Epoch::new(7));
 
+    let plan = machine.access_plan(submission.event()).unwrap();
+    let domain = submission
+        .placement
+        .resolve_domain(submission.event().epoch(), plan.accesses().len())
+        .unwrap();
+    let reservation =
+        SenderNonceReservation::from_authenticated_transaction(&submission.transaction);
+    let dispatch = AuthenticatedObjectDispatch::from_authenticated_transaction(
+        &submission.transaction,
+        AuthenticatedObjectPolicy::OwnedMutations {
+            created_checkpoint: 2,
+        },
+    )
+    .unwrap();
+    let staged = stage_durable_idempotent_event_with_plan(
+        Some(&blob_store),
+        &store,
+        &durable_context(),
+        domain,
+        &resolver("sunrise-test"),
+        submission.event().clone(),
+        &machine,
+        plan,
+        Some(reservation),
+        Some(dispatch),
+        Some(2),
+        None,
+    )
+    .unwrap();
+    match staged {
+        StagedDurableEventOutcome::Fresh { pending_blobs, .. } => {
+            assert_eq!(pending_blobs.len(), 1);
+        }
+        StagedDurableEventOutcome::Replayed(_) => panic!("fresh large update was a replay"),
+    }
+    assert_eq!(
+        blob_store.put_calls(),
+        0,
+        "staging must not publish the blob"
+    );
+    assert!(
+        store.commits.lock().unwrap().is_empty(),
+        "staging must not commit"
+    );
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
+
     handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
         &blob_store,
         &store,
@@ -1207,7 +1253,7 @@ fn authenticated_owned_write_large_update_publishes_and_references_blob() {
     )
     .unwrap();
 
-    assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(machine.calls.load(Ordering::SeqCst), 2);
     assert_eq!(
         blob_store.put_calls(),
         1,

@@ -4706,6 +4706,42 @@ where
     S: StructuredDurableDomainStateStore,
     B: BlobStore,
 {
+    let (domain, staged) = stage_preinstalled_submit_invocation(
+        blob_store,
+        store,
+        context,
+        resolver,
+        catalog,
+        engine,
+        submission,
+        created_checkpoint,
+        fee_composition,
+    )?;
+    let output = commit_staged_durable_event(Some(blob_store), store, context, staged)?;
+    Ok(ResolvedNodeOutput::new(domain, output))
+}
+
+/// Builds the exact existing preinstalled-WASM invocation without publishing
+/// blobs, advancing a nonce, or committing its receipt and object effects.
+/// The direct admission gate still refuses causal stores; a later certified
+/// prepare must add its own verified-profile gate before using this staging
+/// boundary for the causal family.
+#[allow(clippy::too_many_arguments)]
+fn stage_preinstalled_submit_invocation<S, B>(
+    blob_store: &B,
+    store: &S,
+    context: &DurableOperationContext,
+    resolver: &HashSuiteResolver,
+    catalog: &PreinstalledModuleCatalog,
+    engine: &WasmExecutionEngine,
+    submission: AuthenticatedSubmitTransaction,
+    created_checkpoint: u64,
+    fee_composition: Option<PreinstalledFeeComposition<'_>>,
+) -> Result<(AtomicityDomainId, StagedDurableEventOutcome), NodeCoreError>
+where
+    S: StructuredDurableDomainStateStore,
+    B: BlobStore,
+{
     let dispatch = AuthenticatedObjectDispatch::from_authenticated_transaction(
         &submission.transaction,
         AuthenticatedObjectPolicy::OwnedMutations { created_checkpoint },
@@ -4744,7 +4780,7 @@ where
         treasury_object: std::cell::OnceCell::new(),
     };
     let plan = machine.access_plan(&event)?;
-    let output = handle_durable_idempotent_event_with_plan(
+    let staged = stage_durable_idempotent_event_with_plan(
         Some(blob_store),
         store,
         context,
@@ -4758,7 +4794,7 @@ where
         Some(created_checkpoint),
         Some(&machine),
     )?;
-    Ok(ResolvedNodeOutput::new(domain, output))
+    Ok((domain, staged))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4836,6 +4872,22 @@ struct PendingSenderNonceWrite {
     record: SenderNonceRecord,
 }
 
+/// A fully validated invocation that has not published a blob or committed
+/// any state. Receipt replay is represented separately so it cannot be
+/// mistaken for a newly staged mutation.
+// Keep the fresh invocation inline on the common path: boxing this variant
+// would add an allocation to every durable event for a replay-only size win.
+#[allow(clippy::large_enum_variant)]
+enum StagedDurableEventOutcome {
+    Replayed(NodeOutput),
+    Fresh {
+        invocation: DurableInvocationTransaction,
+        output: NodeOutput,
+        pending_blobs: Vec<PendingBlobPublication>,
+        logical: logical_generation::LogicalAdmission,
+    },
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_durable_idempotent_event_with_plan<S, M>(
     blob_store: Option<&dyn BlobStore>,
@@ -4851,6 +4903,68 @@ fn handle_durable_idempotent_event_with_plan<S, M>(
     created_checkpoint: Option<u64>,
     preinstalled_machine: Option<&PreinstalledWasmMachine<'_>>,
 ) -> Result<NodeOutput, NodeCoreError>
+where
+    S: StructuredDurableDomainStateStore,
+    M: TransactionalNodeStateMachine,
+{
+    let staged = stage_durable_idempotent_event_with_plan(
+        blob_store,
+        store,
+        context,
+        domain,
+        resolver,
+        event,
+        machine,
+        plan,
+        reservation,
+        dispatch,
+        created_checkpoint,
+        preinstalled_machine,
+    )?;
+    commit_staged_durable_event(blob_store, store, context, staged)
+}
+
+fn commit_staged_durable_event<S: StructuredDurableDomainStateStore>(
+    blob_store: Option<&dyn BlobStore>,
+    store: &S,
+    context: &DurableOperationContext,
+    staged: StagedDurableEventOutcome,
+) -> Result<NodeOutput, NodeCoreError> {
+    match staged {
+        StagedDurableEventOutcome::Replayed(output) => Ok(output),
+        StagedDurableEventOutcome::Fresh {
+            invocation,
+            output,
+            pending_blobs,
+            logical,
+        } => {
+            // The derivation has already been folded into the staged atomic
+            // invocation. A later certified witness will bind it explicitly.
+            let _ = logical;
+            publish_pending_blobs(blob_store, pending_blobs)?;
+            durable_reconciliation::committed_output(
+                store.commit_invocation(context, invocation),
+                output,
+            )
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_durable_idempotent_event_with_plan<S, M>(
+    blob_store: Option<&dyn BlobStore>,
+    store: &S,
+    context: &DurableOperationContext,
+    domain: AtomicityDomainId,
+    resolver: &HashSuiteResolver,
+    event: NodeEvent,
+    machine: &M,
+    plan: NodeStateAccessPlan,
+    reservation: Option<SenderNonceReservation>,
+    dispatch: Option<AuthenticatedObjectDispatch>,
+    created_checkpoint: Option<u64>,
+    preinstalled_machine: Option<&PreinstalledWasmMachine<'_>>,
+) -> Result<StagedDurableEventOutcome, NodeCoreError>
 where
     S: StructuredDurableDomainStateStore,
     M: TransactionalNodeStateMachine,
@@ -4886,7 +5000,7 @@ where
         event.request_id(),
         event_digest,
     )? {
-        return Ok(output);
+        return Ok(StagedDurableEventOutcome::Replayed(output));
     }
     mutation_fence::require_ordinary_namespace(store, context, domain)?;
 
@@ -5329,7 +5443,7 @@ where
     // Placed after the reserved-namespace check above for the same reason the
     // reclaimed fast-path keys are: these rows are protocol provenance the node
     // itself derived, never state a caller's transition plan supplied.
-    logical_generation::admit_generic_transition(
+    let logical = logical_generation::admit_generic_transition(
         store,
         context,
         domain,
@@ -5359,15 +5473,12 @@ where
     let invocation =
         DurableInvocationTransaction::new(domain, Some(state), objects, receipt, outbox)?;
 
-    // Only now that the complete envelope above has been built and
-    // validated are the publications staged earlier actually performed,
-    // strictly before `commit_invocation`.
-    publish_pending_blobs(blob_store, pending_blob_publications)?;
-
-    durable_reconciliation::committed_output(
-        store.commit_invocation(context, invocation),
-        transition.output,
-    )
+    Ok(StagedDurableEventOutcome::Fresh {
+        invocation,
+        output: transition.output,
+        pending_blobs: pending_blob_publications,
+        logical,
+    })
 }
 
 /// One deferred `BlobStore::put_blob` call staged by
