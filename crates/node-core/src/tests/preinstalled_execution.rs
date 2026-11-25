@@ -920,7 +920,10 @@ fn preinstalled_wasm_owned_write_commits_object_nonce_and_receipt() {
             ..
         } => {
             assert_eq!(invocation.domain(), object_domain);
-            assert_eq!(invocation.receipt().request_id().as_bytes(), request(0xF0).as_bytes());
+            assert_eq!(
+                invocation.receipt().request_id().as_bytes(),
+                request(0xF0).as_bytes()
+            );
             assert_eq!(invocation.object_changes().mutations().len(), 1);
             assert!(invocation.outbox().is_none());
             assert!(pending_blobs.is_empty());
@@ -930,7 +933,10 @@ fn preinstalled_wasm_owned_write_commits_object_nonce_and_receipt() {
     };
     assert_eq!(staged_domain, object_domain);
     assert_eq!(
-        store.get_object_head(&context, object_domain, write_id).unwrap().object_version(),
+        store
+            .get_object_head(&context, object_domain, write_id)
+            .unwrap()
+            .object_version(),
         DurableObjectVersion::new(1)
     );
     assert!(

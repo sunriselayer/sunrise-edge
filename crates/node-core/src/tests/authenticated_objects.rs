@@ -1231,8 +1231,15 @@ fn authenticated_owned_write_large_update_publishes_and_references_blob() {
         }
         StagedDurableEventOutcome::Replayed(_) => panic!("fresh large update was a replay"),
     }
-    assert_eq!(blob_store.put_calls(), 0, "staging must not publish the blob");
-    assert!(store.commits.lock().unwrap().is_empty(), "staging must not commit");
+    assert_eq!(
+        blob_store.put_calls(),
+        0,
+        "staging must not publish the blob"
+    );
+    assert!(
+        store.commits.lock().unwrap().is_empty(),
+        "staging must not commit"
+    );
     assert_eq!(machine.calls.load(Ordering::SeqCst), 1);
 
     handle_authenticated_resolved_durable_submit_transaction_with_owned_object_effects(
