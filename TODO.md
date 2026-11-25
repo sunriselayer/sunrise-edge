@@ -1,6 +1,16 @@
 # Sunrise Edge: 現在のTODO
 
-更新: 2026-11-24 (Asia/Singapore)。元85チェックのうち74件は完了、元の未完了は下の11件（親11件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+更新: 2026-11-25 (Asia/Singapore)。元85チェックのうち74件は完了、元の未完了は下の11件（親11件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+
+## 公開ベータ: 先に進める範囲
+
+実資産を扱わない実験的な公開ベータを先に進める。利用者の署名済み取引送信・参照に加え、FastVoteの管理・drain操作も公開対象とする。資産・状態はリセット可能なテスト用とし、停止や再開、未対応機能を利用者へ明示する。下の元11件は本番・完全releaseの条件として保持し、ベータの公開判定にはその一括完了を要求しない。ベータの結果をM2/M3/M7や本番公開の合格に転用しない。
+
+- [x] 公開ベータの目標と公開対象を決めた（2026-11-25）。現行の単一validator devnetはloopback専用で公開禁止、Cloudflareのevent relayとcertified relayは別の入口であり、この時点で公開可能な一体構成はないと確認した。
+- [ ] 署名済み取引と参照、FastVote管理・drainを実際に提供するベータ用host/入口を構成する。固定chain/context、TLS、閉じた経路、要求量・同時実行の上限、停止手段を持たせ、開発用devnetをそのまま公開しない。
+- [ ] 公開到達する経路を限定して独立にsecurity reviewし、既知の非公開指摘を修正・再確認する。候補sourceのowning checksと通常PRの全7 CI lane・集約`check`を成功させる。
+- [ ] 公開予定の実構成で外部clientから取引送信・receipt/nonce/参照・FastVote操作、重複/不明結果、上限、停止/同じデータでの再開を確認し、結果を保存する。
+- [ ] 実際のendpoint、テスト用chain/asset、公開する操作、監視と停止手順を記録し、人がベータ公開のgo/no-goを決める。
 
 ## コード・検証: 親5件
 
@@ -90,7 +100,7 @@
 
 これらは実役割・実値・実環境・公開権限の条件であり、fixture値やlocal Docker/loopbackの合格とは分ける。
 
-作業順（2026-11-14）: D04/D06/D07/D08/M6/M8の本番準備は後回しとし、既存の選択済みfamilyの非本番実装・検証を優先する。未確定の実運用情報を既存資料の提出待ちにはしない。元の完了条件は維持する。
+作業順（2026-11-25）: 上の公開ベータを先行する。D04/D06/D07/D08/M6/M8の本番準備と元の完了条件は保持し、ベータの前提として一括実施しない。未確定の実運用情報を既存資料の提出待ちにはしない。
 
 - [ ] **D04: 実validator・custody/admin役割とrelease profileを選ぶ**: 独立operators、real genesis/chain pins、economics、supported routes、exact release artifactを固定する。Native+SQLite firstの技術選択だけでは足りない。
   - [ ] operatorsとcustody/admin担当を決める。
@@ -130,7 +140,8 @@
    記録する。startup 0、check件数、hash/countだけはsemantic/runtime合格ではない。
    失われたrawを現在存在するものとしてリンクせず、回収可否と証拠の限界を明記する。
 7. 正常なmergeは該当する元の条件を満たした後だけ。squash/rebase/forceや
-   未認定release/main mergeを行わない。公開許可はD08/M8の別判断。
+   未認定release/main mergeを行わない。本番公開許可はD08/M8、限定された
+   公開ベータは上記の実構成確認と人のgo/no-goで別に判断する。
 
 [Validation profiles](docs/architecture/repository-validation.md)と
 [元production gate](docs/development/history/roadmap-through-2026-10-06.md#cli-first-node-production-gate)
