@@ -61,6 +61,19 @@ pre-sign boundaries, not key protection. Genuine registration and historical
 fee-claim controls remain inside the original owning operator recurrence; merely
 compiling those controls does not prove that expensive workflow passed.
 
+## Local/general review consumer
+
+The SDK's [`LocalExecutionReview`](../../clients/rust/src/local_execution_review.rs)
+rechecks a `PreparedLocalExecution` intent, policy digest, resolved scopes and
+exact signing frame for local/general calls. Its bounded display includes
+the signed targets, entrypoint, access rights, authorizations and opaque
+argument bytes in hex; it refuses undisplayable text or an oversized review
+instead of truncating. It returns the exact intent and signer-frame bytes for
+comparison. This is a seed-free content preview, not semantic interpretation
+of arbitrary contract arguments, durable authority, an approver, or protected
+key custody. Generic CLI routes still require their own protected signing and
+human approval flow.
+
 ## Fee-claim review consumer
 
 [Saved successor fee-claim review](fee-claim-review.md) consumes the retained
