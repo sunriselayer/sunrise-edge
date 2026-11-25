@@ -123,6 +123,32 @@ async fn spawn_observed_host(
     pinned_epoch: Epoch,
     prepare_cached: bool,
 ) -> ObservedHost {
+    spawn_observed_host_with_config(
+        fixture,
+        manifest,
+        resolver,
+        validator_id,
+        signing_key,
+        data_dir,
+        pinned_epoch,
+        prepare_cached,
+        protocol_config(fixture),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn spawn_observed_host_with_config(
+    fixture: &FastVoteGenesisFixture,
+    manifest: &GenesisManifest,
+    resolver: &HashSuiteResolver,
+    validator_id: ValidatorId,
+    signing_key: ed25519_zebra::SigningKey,
+    data_dir: &std::path::Path,
+    pinned_epoch: Epoch,
+    prepare_cached: bool,
+    protocol_config: ProtocolConfig,
+) -> ObservedHost {
     let database_path = data_dir.join(format!("{validator_id}-state.sqlite3"));
     let blob_path = data_dir.join(format!("{validator_id}-blob.sqlite3"));
     let namespace = SqliteNamespace::new(fixture.chain_id.clone(), validator_id, fixture.domain);
@@ -217,7 +243,7 @@ async fn spawn_observed_host(
     let router = certified_fastvote_router(
         components,
         fastvote,
-        protocol_config(fixture),
+        protocol_config,
         authority,
         NodeConfig::new(
             fixture.chain_id.clone(),
@@ -969,5 +995,144 @@ async fn changed_live_epoch_refuses_fixed_host_new_work_but_replays_exact_commit
     );
     for host in hosts {
         let _ = host.stop.send(());
+    }
+}
+
+/// Test-only live cohort for the separate-UID generic paid CLI fixture. The
+/// Docker controller owns the exact lifecycle and never exposes this listener
+/// outside its network-disabled, loopback-only container.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "run through scripts/check-docker-generic-paid-custody.py --fastvote"]
+async fn generic_paid_custody_fastvote_fixture_server() {
+    use abi::{
+        AccessManifest,
+        call_values::{CallValue, ValueLayout, encode_call_value},
+        encode_access_manifest,
+        executable_abi::{ExecutableAbi, encode_executable_abi},
+        package_types::PackageOrigin,
+        public_abi::{EntrypointDeclaration, PackageAbi},
+    };
+
+    let data_dir = PathBuf::from(
+        std::env::var_os("SUNRISE_GENERIC_PAID_FASTVOTE_FIXTURE_DIR")
+            .expect("explicit disposable FastVote fixture directory"),
+    );
+    fs::create_dir(&data_dir).unwrap();
+    let unique = format!(
+        "paid-uid-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let fixture = genesis_fixture::build_network_fixture(&unique);
+    let manifest = decode_genesis_manifest(&fixture.manifest_bytes).unwrap();
+    let mut network = String::new();
+    let mut stops = Vec::with_capacity(fixture.validators.len());
+    let mut first_endpoint = None;
+    for validator in &fixture.validators {
+        let mut canonical_config = protocol_config(&fixture);
+        canonical_config.transaction_auth_profile =
+            Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
+        let host = spawn_observed_host_with_config(
+            &fixture,
+            &manifest,
+            &fixture.resolver,
+            validator.validator_id,
+            validator.signing_key,
+            &data_dir,
+            fixture.epoch,
+            false,
+            canonical_config,
+        )
+        .await;
+        let endpoint = host.addr.to_string();
+        if first_endpoint.is_none() {
+            first_endpoint = Some(endpoint.clone());
+        }
+        network.push_str(&format!("{} {endpoint} - -\n", validator.validator_id));
+        stops.push(host.stop);
+    }
+    fs::write(data_dir.join("fastvote-network"), network).unwrap();
+    fs::write(data_dir.join("genesis-manifest"), &fixture.manifest_bytes).unwrap();
+    fs::write(
+        data_dir.join("paid-policy"),
+        execution::paid_execution::encode_paid_fee_policy(&manifest.fee_policy).unwrap(),
+    )
+    .unwrap();
+
+    let origin =
+        PackageOrigin::unverified(fixture.chain_id.clone(), fixture.sender, [0x31; 32]).unwrap();
+    let entrypoints = ["init", "run"]
+        .into_iter()
+        .map(|name| EntrypointDeclaration {
+            name: name.to_owned(),
+            type_parameters: Vec::new(),
+            objects: Vec::new(),
+        })
+        .collect();
+    let layout = ValueLayout::Tuple(Vec::new());
+    let abi = encode_executable_abi(&ExecutableAbi {
+        call: abi::call_values::CallAbi {
+            objects: PackageAbi {
+                origin,
+                constructors: Vec::new(),
+                entrypoints,
+            },
+            arguments: vec![layout.clone(), layout.clone()],
+            bodies: Vec::new(),
+        },
+        initializer: Some("init".to_owned()),
+        transferable_constructors: Vec::new(),
+        results: vec![Vec::new(), Vec::new()],
+    })
+    .unwrap();
+    fs::write(
+        data_dir.join("contract.wasm"),
+        wat::parse_str(
+            "(module (memory (export \"memory\") 1 2) (func (export \"init\")) (func (export \"run\")))",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(data_dir.join("contract.abi"), abi).unwrap();
+    fs::write(
+        data_dir.join("args"),
+        encode_call_value(&layout, &CallValue::Tuple(Vec::new())).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        data_dir.join("access"),
+        encode_access_manifest(&AccessManifest::new()).unwrap(),
+    )
+    .unwrap();
+
+    let hex = |bytes: &[u8]| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
+    let parent = data_dir.parent().unwrap();
+    fs::write(
+        parent.join("paid-ready"),
+        format!(
+            "endpoint={}\nchain_id={}\nprotocol_version={}\ndomain={}\npublisher={}\nfee_source={}\ngenesis_digest={}\n",
+            first_endpoint.unwrap(),
+            fixture.chain_id,
+            fixture.protocol_version.get(),
+            fixture.domain,
+            hex(&fixture.sender),
+            fixture.fee_coin,
+            hex(&fixture.manifest_digest),
+        ),
+    )
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    while !parent.join("paid-stop").exists() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        parent.join("paid-stop").exists(),
+        "FastVote fixture did not stop"
+    );
+    for stop in stops {
+        let _ = stop.send(());
     }
 }

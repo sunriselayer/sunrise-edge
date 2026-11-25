@@ -51,3 +51,4 @@ sunrise-edge-client.workspace = true
 sunrise-edge-cli.workspace = true
 sunrise-edge-devnet.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+wat.workspace = true
