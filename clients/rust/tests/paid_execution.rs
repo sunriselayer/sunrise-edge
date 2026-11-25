@@ -148,6 +148,46 @@ fn paid_review_refuses_unbounded_opaque_arguments_without_truncation() {
     ));
 }
 
+#[test]
+fn paid_review_exposes_policy_pricing_and_recipient_changes() {
+    let request_id = RequestId::new([0x42; 32]).unwrap();
+    let original_policy = fee_policy();
+    let mut changed_policy = original_policy.clone();
+    changed_policy.gas_schedule.base_fee += 1;
+    changed_policy.fee_recipient = *LocalSigner::from_seed([9; 32]).address().as_bytes();
+    let prepare = |policy: &PaidFeePolicy| {
+        PreparedPaidExecution::prepare(
+            signer().address(),
+            &resolver(),
+            &expected(),
+            policy,
+            consent(),
+            PaidApplication::Publish(artifact()),
+            request_id,
+            4,
+            100_000,
+            vec![],
+        )
+        .unwrap()
+    };
+    let original = PaidExecutionReview::build(&prepare(&original_policy)).unwrap();
+    let changed = PaidExecutionReview::build(&prepare(&changed_policy)).unwrap();
+    assert_ne!(original.frame_bytes(), changed.frame_bytes());
+    assert!(changed.text().contains(&format!(
+        "policy.gas.base_fee={}\n",
+        changed_policy.gas_schedule.base_fee
+    )));
+    assert!(changed.text().contains(&format!(
+                "policy.fee_recipient={}\n",
+                changed_policy
+                    .fee_recipient
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            )));
+    assert_ne!(original.text(), changed.text());
+}
+
 fn prepared_publish_with(
     policy: &PaidFeePolicy,
     consent: FeeSourceConsent,

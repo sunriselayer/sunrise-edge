@@ -43,7 +43,8 @@ Development `LocalSigner`/seed conveniences delegate to these prepared owners.
 Actual CLI local/general execution, paid Call/Instantiate/Publish, publication,
 Standard Asset paid operations, original/successor bond registration and
 successor fee claims use the same preparation and finalization. Their concrete
-signer selections differ: generic local/paid commands reject custody, ordinary
+signer selections differ: generic local commands reject custody, generic paid
+commands use custody selection only to export unsigned review preimages, ordinary
 bond and generic fee-claim commands use development signing, while the scoped
 original-genesis bond and publication/recognized Standard Asset/positive Split
 have dedicated protected routes. The
@@ -79,10 +80,15 @@ frame. Its bounded summary covers fee consent and the selected
 Publish/Instantiate/Call content; the full canonical intent, policy and frame
 remain available for exact-byte comparison. Opaque call arguments and
 authorizations are shown as canonical hex. Large content refuses review
-instead of truncating. This is a non-authorizing SDK component: it neither
-checks live fee-source currentness or code/instance provenance nor connects
-the generic paid CLI to protected custody. Those steps remain necessary
-before generic paid signing can use a protected key.
+instead of truncating. The SDK component itself neither checks live
+fee-source currentness nor code/instance provenance. The separate
+[generic paid custody route](../guides/generic-paid-custody.md) exports an
+unsigned intent from the CLI, checks the pinned policy and current inline fee
+source at both approval and signing, then binds the exact frame to a durable,
+revocable approval. A node query is an observation at that endpoint;
+admission must still decide currentness atomically. Arbitrary contract
+semantics remain operator-reviewed opaque content, not an SDK proof of code
+safety.
 
 ## Separate M2 requirements
 

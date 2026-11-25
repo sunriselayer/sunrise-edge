@@ -28,6 +28,88 @@ fn invalid(message: &'static str) -> CliError {
 }
 pub(super) const MAX_INSTANCE_RECORD_BYTES: usize = 2048;
 
+/// Submits an already protected-signed canonical paid intent without opening
+/// a local signer or custody socket. The configured endpoint/context and
+/// installed fee policy are checked again before submission. This query is
+/// an endpoint observation; admission still decides currentness atomically.
+pub(super) fn run_signed_submit<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    let mut specs = vec![
+        scalar("--endpoint"),
+        scalar("--expected-chain-id"),
+        scalar("--expected-protocol-version"),
+        scalar("--expected-epoch"),
+        scalar("--expected-hash-suite-id"),
+        scalar("--expected-domain"),
+        scalar("--signed-file"),
+        scalar("--submission-out"),
+        scalar("--result-out"),
+        scalar("--dependency-ref-out"),
+        scalar("--instance-ref-out"),
+    ];
+    specs.extend(tls_flag_specs());
+    let (parsed, schedules) = super::hash_suite_pins::parse_pinned_flags(args, &specs)?;
+    let expected = super::standard_asset::parse_expected_context(&parsed)?;
+    let resolver = super::hash_suite_pins::publication_resolver(&expected, schedules)?;
+    let context = PublicationContext::new(
+        expected.chain_id().clone(),
+        expected.protocol_version(),
+        expected.epoch(),
+    )
+    .map_err(failure)?;
+    let signed_bytes = read(
+        parsed.require("--signed-file")?,
+        sunrise_edge_client::MAX_SIGNED_PAID_INTENT_BYTES,
+    )?;
+    execution::paid_execution::authenticate_paid_intent(&resolver, &context, &signed_bytes)
+        .map_err(failure)?;
+    let signed = sunrise_edge_client::decode_signed_paid_intent(&signed_bytes).map_err(failure)?;
+    let derived = super::fastvote_network::recompute_derived_reference(
+        &parsed,
+        &resolver,
+        &context,
+        &signed.intent.application,
+    )?;
+    let request_id = RequestId::new(signed.intent.request_id).map_err(failure)?;
+    let client = connect_paid_execution(parsed.require("--endpoint")?, &parsed)?;
+    let policy = client.query_paid_fee_policy(&resolver, &expected)?;
+    if signed.intent.fee_policy_digest
+        != sunrise_edge_client::paid_fee_policy_digest(&resolver, &policy).map_err(failure)?
+    {
+        return Err(invalid("signed paid policy differs from installed policy"));
+    }
+    client.validate_paid_fee_source_for_owner(
+        Address::new(signed.intent.sender),
+        &resolver,
+        &expected,
+        &policy,
+        &signed.intent.consent,
+    )?;
+    let result = submit_with_outputs(
+        parsed.get("--result-out"),
+        parsed.get("--submission-out"),
+        derived.as_ref().map(|(path, _, _)| *path),
+        &signed_bytes,
+        derived.as_ref().map(|(_, _, bytes)| bytes.as_slice()),
+        request_id,
+        signed.intent.nonce,
+        || {
+            client
+                .submit_paid_execution(&signed, &resolver)
+                .map_err(CliError::from)
+        },
+    )?;
+    println!(
+        "paid_status={:?}\ngas_used={}",
+        result.status, result.effects.gas_used
+    );
+    if result.status != PaidExecutionStatus::Success {
+        return Err(invalid(
+            "paid contract execution rejected; replay identical signed bytes",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_remote_instance(
     record: &InstanceRecord,
     remote: Option<&InstanceRecord>,
@@ -111,6 +193,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         scalar("--request-id"),
         scalar("--nonce"),
         scalar("--submission-out"),
+        scalar("--unsigned-out"),
         scalar("--result-out"),
         scalar("--authorizations"),
     ];
@@ -164,14 +247,32 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         super::fastvote_network::validate_paid_network_flags(&parsed)?;
     }
     let signer_selection: SignerSelection = parse_signer_selection(&parsed)?;
-    // Refused immediately, before any FastVote/network peer validation,
-    // signer file access, or device I/O: neither Ledger nor custody
-    // (publication-only) supports paid contract signing.
+    // A custody selection may only export a reviewed unsigned request. It
+    // cannot sign or submit through this development command.
     if matches!(signer_selection, SignerSelection::Ledger { .. }) {
         return Err(invalid("Ledger paid contract signing is not supported"));
     }
-    if matches!(signer_selection, SignerSelection::Custody { .. }) {
-        return Err(invalid("custody paid contract signing is not supported"));
+    let custody_sender = match &signer_selection {
+        SignerSelection::Custody {
+            expected_public_key,
+            ..
+        } => {
+            if budget.is_some() || parsed.get("--unsigned-out").is_none() {
+                return Err(invalid(
+                    "custody paid preparation requires --unsigned-out and direct mode",
+                ));
+            }
+            Some(Address::new(*expected_public_key))
+        }
+        _ => {
+            if parsed.get("--unsigned-out").is_some() {
+                return Err(invalid("--unsigned-out requires custody signer selection"));
+            }
+            None
+        }
+    };
+    if let Some(path) = parsed.get("--unsigned-out") {
+        crate::custody::check_review_preimage_destination(Path::new(path))?;
     }
     let load_signer = || -> Result<LocalSigner, CliError> {
         match &signer_selection {
@@ -182,13 +283,13 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
                 Err(invalid("Ledger paid contract signing is not supported"))
             }
             SignerSelection::Custody { .. } => {
-                Err(invalid("custody paid contract signing is not supported"))
+                Err(invalid("custody preparation uses public identity only"))
             }
         }
     };
     // Keep direct mode's existing local-input order. Network mode validates
     // the selected cohort peer before reading the signing seed.
-    let direct_signer: Option<LocalSigner> = if budget.is_none() {
+    let direct_signer: Option<LocalSigner> = if budget.is_none() && custody_sender.is_none() {
         Some(load_signer()?)
     } else {
         None
@@ -219,9 +320,15 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     if let Some(budget) = budget {
         budget.ensure_live()?;
     }
-    let signer: LocalSigner = match direct_signer {
-        Some(signer) => signer,
-        None => load_signer()?,
+    let signer: Option<LocalSigner> = match direct_signer {
+        Some(signer) => Some(signer),
+        None if custody_sender.is_none() => Some(load_signer()?),
+        None => None,
+    };
+    let sender: Address = match (&signer, custody_sender) {
+        (Some(signer), _) => signer.address(),
+        (None, Some(sender)) => sender,
+        (None, None) => return Err(invalid("paid sender missing")),
     };
     let direct_client: Option<Client<crate::net::CliTransport>> = if network.is_none() {
         Some(connect_paid_execution(
@@ -260,7 +367,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     };
     let refund_recipient: [u8; 32] = match parsed.get("--refund-recipient") {
         Some(value) => decode_hex_32("--refund-recipient", value)?,
-        None => *signer.address().as_bytes(),
+        None => *sender.as_bytes(),
     };
     let consent = FeeSourceConsent {
         source: source_ref,
@@ -269,7 +376,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         refund_recipient,
     };
     client.validate_paid_fee_source_for_owner(
-        signer.address(),
+        sender,
         &resolver,
         &expected,
         &fee_policy,
@@ -282,7 +389,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     let nonce: u64 = match parsed.get("--nonce") {
         Some(value) => parse_u64("--nonce", value)?,
         None => {
-            let value = client.query_next_nonce(signer.address())?;
+            let value = client.query_next_nonce(sender)?;
             if value.epoch() != expected.epoch() {
                 return Err(invalid("nonce epoch differs from expected context"));
             }
@@ -300,11 +407,11 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     };
     let (application, instance_output): (PaidApplication, Option<InstanceRecord>) = match action {
         "paid-publish" => (
-            PaidApplication::Publish(build_artifact(&parsed, &signer, &resolver, &context)?),
+            PaidApplication::Publish(build_artifact(&parsed, sender, &resolver, &context)?),
             None,
         ),
         "paid-instantiate" | "paid-call" => build_call_application(
-            action, &parsed, &client, &signer, &resolver, &expected, &context, request_id, nonce,
+            action, &parsed, &client, sender, &resolver, &expected, &context, request_id, nonce,
             gas_limit,
         )?,
         _ => unreachable!(),
@@ -313,7 +420,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         budget.ensure_live()?;
     }
     let prepared: PreparedPaidExecution = PreparedPaidExecution::prepare(
-        signer.address(),
+        sender,
         &resolver,
         &expected,
         &fee_policy,
@@ -324,6 +431,14 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         gas_limit,
         authorizations,
     )?;
+    if let Some(path) = parsed.get("--unsigned-out") {
+        let review = sunrise_edge_client::PaidExecutionReview::build(&prepared).map_err(failure)?;
+        print!("{}", review.text());
+        crate::custody::write_review_preimage(Path::new(path), review.intent_bytes())?;
+        println!("paid_unsigned_exported=true\nrequest_id={request_id}\nnonce={nonce}");
+        return Ok(());
+    }
+    let signer = signer.ok_or_else(|| invalid("paid signer missing"))?;
     let signed = prepared.sign_and_finalize_with(&signer)?;
     let signed_bytes: Vec<u8> = encode_signed_paid_intent(&signed).map_err(failure)?;
     let (derived_path, derived_kind, derived_bytes): (Option<&str>, &'static str, Option<Vec<u8>>) =
@@ -413,7 +528,7 @@ pub(super) fn dependency_reference_bytes(
 
 fn build_artifact(
     parsed: &ParsedArgs,
-    signer: &LocalSigner,
+    sender: Address,
     resolver: &HashSuiteResolver,
     context: &PublicationContext,
 ) -> Result<CodeArtifact, CliError> {
@@ -441,7 +556,7 @@ fn build_artifact(
         context: context.clone(),
         origin: PackageOrigin::unverified(
             context.chain_id().clone(),
-            *signer.address().as_bytes(),
+            *sender.as_bytes(),
             decode_hex_32("--origin-seed", parsed.require("--origin-seed")?)?,
         )
         .map_err(failure)?,
@@ -462,7 +577,7 @@ fn build_call_application<T: Transport>(
     action: &str,
     parsed: &ParsedArgs,
     client: &Client<T>,
-    signer: &LocalSigner,
+    sender: Address,
     resolver: &HashSuiteResolver,
     expected: &ExpectedProtocolContext,
     context: &PublicationContext,
@@ -501,7 +616,7 @@ fn build_call_application<T: Transport>(
         }
         None => InstanceRecord {
             context: context.clone(),
-            creator: *signer.address().as_bytes(),
+            creator: *sender.as_bytes(),
             seed: decode_hex_32("--instance-seed", parsed.require("--instance-seed")?)?,
             code: code.clone(),
             revision: 1,
@@ -528,7 +643,7 @@ fn build_call_application<T: Transport>(
     let call = CallIntent {
         context: context.clone(),
         request_id: *request_id.as_bytes(),
-        sender: *signer.address().as_bytes(),
+        sender: *sender.as_bytes(),
         nonce,
         code,
         instance: instance_target(resolver, &instance).map_err(failure)?,
@@ -559,9 +674,8 @@ mod tests {
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
-    /// Paid execution must refuse custody signing immediately after
-    /// parsing the signer selection, before any FastVote/network peer
-    /// validation, signer file access, or device I/O.
+    /// Custody without an unsigned export destination must refuse before
+    /// any signer file, peer, or device I/O.
     #[test]
     fn rejects_custody_signer_selection_before_any_io() {
         let error = run(
@@ -576,6 +690,31 @@ mod tests {
             ],
         )
         .unwrap_err();
+        assert!(matches!(error, CliError::LocalExecution(_)));
+    }
+
+    #[test]
+    fn signed_submit_rejects_malformed_saved_bytes_before_network_io() {
+        let path = temporary_path("malformed-signed");
+        std::fs::write(&path, b"not-a-signed-paid-intent").unwrap();
+        let error = run_signed_submit(vec![
+            OsString::from("--endpoint"),
+            OsString::from("127.0.0.1:0"),
+            OsString::from("--expected-chain-id"),
+            OsString::from("paid-submit-test"),
+            OsString::from("--expected-protocol-version"),
+            OsString::from("7"),
+            OsString::from("--expected-epoch"),
+            OsString::from("0"),
+            OsString::from("--expected-hash-suite-id"),
+            OsString::from("1"),
+            OsString::from("--expected-domain"),
+            OsString::from("11".repeat(32)),
+            OsString::from("--signed-file"),
+            path.as_os_str().to_owned(),
+        ])
+        .unwrap_err();
+        std::fs::remove_file(&path).unwrap();
         assert!(matches!(error, CliError::LocalExecution(_)));
     }
 

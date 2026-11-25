@@ -7,7 +7,7 @@
 //! and the complete canonical intent, policy, and signing frame remain
 //! available for exact-byte comparison.
 
-use abi::package_types::encode_scoped_type_arguments;
+use abi::package_types::{encode_scoped_type_arguments, encode_scoped_type_tag};
 use execution::call::CallIntent;
 use execution::call_authorization::encode_call_authorizations;
 use execution::paid_execution::{
@@ -259,6 +259,106 @@ impl PaidExecutionReview {
         lines.add_hex("request_id", &intent.request_id)?;
         lines.add("nonce", intent.nonce.to_string())?;
         lines.add("fee_policy_digest", intent.fee_policy_digest.to_string())?;
+        let policy = prepared.fee_policy();
+        lines.add(
+            "policy.base_policy_digest",
+            policy.base_policy_digest.to_string(),
+        )?;
+        render_dependency(&mut lines, "policy.code", &policy.code)?;
+        lines.add_hex("policy.instance.creator", &policy.instance.creator)?;
+        lines.add_hex("policy.instance.seed", &policy.instance.seed)?;
+        lines.add(
+            "policy.instance.revision",
+            policy.instance.revision.to_string(),
+        )?;
+        lines.add(
+            "policy.instance.record_digest",
+            policy.instance.record_digest.to_string(),
+        )?;
+        for (name, value) in [
+            ("policy.reserve_entrypoint", &policy.reserve_entrypoint),
+            (
+                "policy.reserve_all_entrypoint",
+                &policy.reserve_all_entrypoint,
+            ),
+            ("policy.settle_entrypoint", &policy.settle_entrypoint),
+        ] {
+            lines.add(
+                name,
+                display_safe(value, abi::MAX_ENTRYPOINT_BYTES)
+                    .map_err(|_: DisplayTextError| PaidExecutionReviewError::Text)?,
+            )?;
+        }
+        lines.add(
+            "policy.type_argument_count",
+            policy.type_arguments.len().to_string(),
+        )?;
+        lines.add_hex(
+            "policy.type_arguments.canonical",
+            &encode_scoped_type_arguments(intent.context.chain_id(), &policy.type_arguments)
+                .map_err(|error| PaidExecutionReviewError::Content(Box::new(error)))?,
+        )?;
+        lines.add_hex(
+            "policy.asset_type.canonical",
+            &encode_scoped_type_tag(&policy.asset_type)
+                .map_err(|error| PaidExecutionReviewError::Content(Box::new(error)))?,
+        )?;
+        lines.add_hex(
+            "policy.reservation_type.canonical",
+            &encode_scoped_type_tag(&policy.reservation_type)
+                .map_err(|error| PaidExecutionReviewError::Content(Box::new(error)))?,
+        )?;
+        lines.add("policy.schema", policy.schema.to_string())?;
+        lines.add_hex("policy.fee_recipient", &policy.fee_recipient)?;
+        lines.add(
+            "policy.gas.base_fee",
+            policy.gas_schedule.base_fee.to_string(),
+        )?;
+        lines.add(
+            "policy.gas.execution_price",
+            policy.gas_schedule.execution_price.to_string(),
+        )?;
+        lines.add(
+            "policy.gas.read_price",
+            policy.gas_schedule.read_price.to_string(),
+        )?;
+        lines.add(
+            "policy.gas.write_price",
+            policy.gas_schedule.write_price.to_string(),
+        )?;
+        lines.add(
+            "policy.gas.storage_price",
+            policy.gas_schedule.storage_price.to_string(),
+        )?;
+        lines.add(
+            "policy.gas.system_module_price",
+            policy.gas_schedule.system_module_price.to_string(),
+        )?;
+        for (name, value) in [
+            ("policy.conversion_divisor", policy.conversion_divisor),
+            ("policy.reserve_allowance", policy.reserve_allowance),
+            ("policy.settle_allowance", policy.settle_allowance),
+            ("policy.memory_bytes", policy.memory_bytes),
+            ("policy.output_bytes", policy.output_bytes),
+            (
+                "policy.publish_artifact_byte_price",
+                policy.publish_artifact_byte_price,
+            ),
+            (
+                "policy.publish_closure_node_price",
+                policy.publish_closure_node_price,
+            ),
+        ] {
+            lines.add(name, value.to_string())?;
+        }
+        for (name, value) in [
+            ("policy.calls", policy.calls),
+            ("policy.handles", policy.handles),
+            ("policy.creations", policy.creations),
+            ("policy.events", policy.events),
+        ] {
+            lines.add(name, value.to_string())?;
+        }
         lines.add("fee_source.id", intent.consent.source.id.to_string())?;
         lines.add(
             "fee_source.version",
