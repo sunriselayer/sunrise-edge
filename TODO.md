@@ -4,10 +4,10 @@
 
 ## 公開ベータ: 先に進める範囲
 
-実資産を扱わない実験的な公開ベータを先に進める。利用者の署名済み取引送信・参照に加え、FastVoteの管理・drain操作も公開対象とする。資産・状態はリセット可能なテスト用とし、停止や再開、未対応機能を利用者へ明示する。下の元11件は本番・完全releaseの条件として保持し、ベータの公開判定にはその一括完了を要求しない。ベータの結果をM2/M3/M7や本番公開の合格に転用しない。
+実資産を扱わない実験的な公開ベータを先に進める。利用者の署名済み有料取引は既存のFastVote prepare/quorum/apply経路で受け、参照とFastVoteの管理・drain操作も公開対象とする。`/v1/events`はこのベータの必須経路にしない。資産・状態はリセット可能なテスト用とし、停止や再開、未対応機能を利用者へ明示する。下の元11件は本番・完全releaseの条件として保持し、ベータの公開判定にはその一括完了を要求しない。ベータの結果をM2/M3/M7や本番公開の合格に転用しない。
 
-- [x] 公開ベータの目標と公開対象を決めた（2026-11-25）。現行の単一validator devnetはloopback専用で公開禁止、Cloudflareのevent relayとcertified relayは別の入口であり、この時点で公開可能な一体構成はないと確認した。
-- [ ] 署名済み取引と参照、FastVote管理・drainを実際に提供するベータ用host/入口を構成する。固定chain/context、TLS、閉じた経路、要求量・同時実行の上限、停止手段を持たせ、開発用devnetをそのまま公開しない。
+- [x] 公開ベータの目標と経路を決めた（2026-11-25）。既存の`sqlite_source_host`とcertified relayは、署名済み有料取引・参照・FastVote管理を同じcertified profileで扱える。現行の単一validator devnetはloopback専用で公開禁止。既存componentの存在は実配置の公開資格にはならない。
+- [ ] 既存のcertified profileをベータ用に固定し、validatorごとのhostと公開入口を実際に構成する。固定chain/context、TLS、閉じた経路、要求量・同時実行の上限、停止手段を持たせ、開発用devnetをそのまま公開しない。
 - [ ] 公開到達する経路を限定して独立にsecurity reviewし、既知の非公開指摘を修正・再確認する。候補sourceのowning checksと通常PRの全7 CI lane・集約`check`を成功させる。
 - [ ] 公開予定の実構成で外部clientから取引送信・receipt/nonce/参照・FastVote操作、重複/不明結果、上限、停止/同じデータでの再開を確認し、結果を保存する。
 - [ ] 実際のendpoint、テスト用chain/asset、公開する操作、監視と停止手順を記録し、人がベータ公開のgo/no-goを決める。
