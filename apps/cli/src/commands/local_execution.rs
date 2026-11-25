@@ -95,17 +95,22 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             scalar("--instance-ref-out"),
         ]);
     } else {
-        specs.extend(signer_flag_specs());
+        if action == "prepare-call" {
+            specs.extend([scalar("--sender"), scalar("--unsigned-out")]);
+        } else {
+            specs.extend(signer_flag_specs());
+        }
         specs.extend([
             scalar("--args"),
             scalar("--type-args"),
             scalar("--gas-limit"),
             scalar("--request-id"),
             scalar("--nonce"),
-            scalar("--result-out"),
-            scalar("--submission-out"),
             scalar("--authorizations"),
         ]);
+        if action != "prepare-call" {
+            specs.extend([scalar("--result-out"), scalar("--submission-out")]);
+        }
         if action == "instantiate" {
             specs.extend([scalar("--code-ref"), scalar("--instance-seed")]);
         } else {
@@ -120,7 +125,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     if parsed.get("--authorizations").is_some() && !parsed.is_present("--general-calls") {
         return Err(invalid("--authorizations requires --general-calls"));
     }
-    let signer: Option<LocalSigner> = if action == "query-instance" {
+    let signer: Option<LocalSigner> = if action == "query-instance" || action == "prepare-call" {
         None
     } else {
         match parse_signer_selection(&parsed)? {
@@ -130,8 +135,8 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             SignerSelection::Ledger { .. } => {
                 return Err(invalid("Ledger local execution signing is not supported"));
             }
-            // Custody is publication-only; refused before any file,
-            // network, or device I/O.
+            // This generic signer selection remains publication-only; the
+            // explicit saved-Call custody route is separate.
             SignerSelection::Custody { .. } => {
                 return Err(crate::custody::CustodyError::PublicationOnly {
                     command: "local execution",
@@ -181,7 +186,14 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         }
         return Ok(());
     }
-    let signer: LocalSigner = signer.ok_or_else(|| invalid("missing signer"))?;
+    let sender: Address = if action == "prepare-call" {
+        Address::new(decode_hex_32("--sender", parsed.require("--sender")?)?)
+    } else {
+        signer
+            .as_ref()
+            .ok_or_else(|| invalid("missing signer"))?
+            .address()
+    };
     let authorizations: Vec<call_authorization::CallAuthorization> =
         if let Some(path) = parsed.get("--authorizations") {
             call_authorization::decode_call_authorizations(&read(
@@ -192,7 +204,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         } else {
             Vec::new()
         };
-    let loaded: Option<InstanceRecord> = if action == "call" {
+    let loaded: Option<InstanceRecord> = if action == "call" || action == "prepare-call" {
         Some(
             decode_instance_record(&read(parsed.require("--instance-ref")?, 4096)?)
                 .map_err(failure)?,
@@ -225,14 +237,14 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         }
         None => InstanceRecord {
             context: context.clone(),
-            creator: *signer.address().as_bytes(),
+            creator: *sender.as_bytes(),
             seed: decode_hex_32("--instance-seed", parsed.require("--instance-seed")?)?,
             code: code.clone(),
             revision: 1,
             initializer: initializer.clone(),
         },
     };
-    let access: AccessManifest = if action == "call" {
+    let access: AccessManifest = if action == "call" || action == "prepare-call" {
         decode_access_manifest(
             &read(parsed.require("--access")?, call::MAX_CALL_INTENT_BYTES)?,
             32,
@@ -255,7 +267,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     let nonce: u64 = if let Some(value) = parsed.get("--nonce") {
         parse_u64("--nonce", value)?
     } else {
-        let value = client.query_next_nonce(signer.address())?;
+        let value = client.query_next_nonce(sender)?;
         if value.epoch() != expected.epoch() {
             return Err(invalid("nonce epoch differs from expected context"));
         }
@@ -269,7 +281,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     let call: CallIntent = CallIntent {
         context,
         request_id: *request_id.as_bytes(),
-        sender: *signer.address().as_bytes(),
+        sender: *sender.as_bytes(),
         nonce,
         code,
         instance: instance_target(&resolver, &instance).map_err(failure)?,
@@ -293,7 +305,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         &policy,
     )?;
     let prepared: PreparedLocalExecution = PreparedLocalExecution::prepare(
-        signer.address(),
+        sender,
         &resolver,
         &expected,
         &policy,
@@ -302,7 +314,18 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         authorizations,
         &scopes,
     )?;
-    let signed = prepared.sign_and_finalize_with(&signer)?;
+    if action == "prepare-call" {
+        let review = LocalExecutionReview::build(&prepared).map_err(failure)?;
+        print!("{}", review.display());
+        crate::custody::write_review_preimage(
+            Path::new(parsed.require("--unsigned-out")?),
+            review.intent_bytes(),
+        )?;
+        println!("unsigned_local_call_exported=true\nrequest_id={request_id}\nnonce={nonce}");
+        return Ok(());
+    }
+    let signed = prepared
+        .sign_and_finalize_with(signer.as_ref().ok_or_else(|| invalid("missing signer"))?)?;
     let result = submit_with_outputs(
         parsed.get("--result-out"),
         parsed.get("--submission-out"),
@@ -329,6 +352,82 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         return Err(invalid(
             "contract trapped; zero-fee rejection consumed nonce, replay identical bytes",
         ));
+    }
+    Ok(())
+}
+
+/// Submits an already protected-signed canonical Call without loading any
+/// signing key. The expected context and local/general policy are selected
+/// independently of the signed file and checked before network submission.
+pub(super) fn submit_signed_call<I: IntoIterator<Item = OsString>>(
+    args: I,
+) -> Result<(), CliError> {
+    let mut specs = vec![
+        switch("--general-calls"),
+        scalar("--endpoint"),
+        scalar("--expected-chain-id"),
+        scalar("--expected-protocol-version"),
+        scalar("--expected-epoch"),
+        scalar("--expected-hash-suite-id"),
+        scalar("--expected-domain"),
+        scalar("--signed-file"),
+        scalar("--result-out"),
+        scalar("--submission-out"),
+    ];
+    specs.extend(tls_flag_specs());
+    let parsed = parse_flags(args, &specs)?;
+    let expected = super::standard_asset::parse_expected_context(&parsed)?;
+    let resolver = local_publication_resolver(&expected)?;
+    let context = PublicationContext::new(
+        expected.chain_id().clone(),
+        expected.protocol_version(),
+        expected.epoch(),
+    )
+    .map_err(failure)?;
+    let policy = if parsed.is_present("--general-calls") {
+        LocalExecutionPolicy::general(context)
+    } else {
+        LocalExecutionPolicy::new(context)
+    };
+    let bytes = read(
+        parsed.require("--signed-file")?,
+        MAX_LOCAL_EXECUTION_INTENT_BYTES,
+    )?;
+    let signed = decode_signed_local_execution(&bytes).map_err(failure)?;
+    if signed.intent.mode != LocalExecutionMode::Call
+        || encode_signed_local_execution(&signed).map_err(failure)? != bytes
+    {
+        return Err(invalid("signed input is not a canonical local Call"));
+    }
+    authenticate_local_execution(&resolver, &policy, &bytes).map_err(failure)?;
+    let request_id = RequestId::new(signed.intent.call.request_id)?;
+    let nonce = signed.intent.call.nonce;
+    let client = connect_execution(parsed.require("--endpoint")?, &parsed)?;
+    client.query_verified_context(&expected)?;
+    let result = submit_with_outputs(
+        parsed.get("--result-out"),
+        parsed.get("--submission-out"),
+        &bytes,
+        request_id,
+        nonce,
+        || {
+            client
+                .submit_local_execution(&signed, &resolver, &resolver)
+                .map_err(CliError::from)
+        },
+    )?;
+    println!(
+        "execution_success={}",
+        matches!(result.effects.status, ExecutionStatus::Success)
+    );
+    println!("gas_used={}", result.effects.gas_used);
+    println!(
+        "object_effect_count={}",
+        result.effects.object_effects.len()
+    );
+    println!("event_count={}", result.effects.events.len());
+    if matches!(result.effects.status, ExecutionStatus::Failure { .. }) {
+        return Err(invalid("contract trapped; replay identical signed bytes"));
     }
     Ok(())
 }

@@ -33,6 +33,9 @@
 //! - `custody serve-fee-split` uses DR-0269's closed kind-6 Leg/Claim
 //!   owner, genuine successor workflow and original historical key. Its two
 //!   complete phase approvals share the existing permanent request tombstone.
+//! - `custody approve-local-call`/`sign-local-call` consume a saved canonical
+//!   local/general Call under this process's pinned config and a dedicated
+//!   approval directory, with exact signed-frame approval and no network.
 //! - `custody approve-fee-claim`/`serve-fee-claim` use the same owner with
 //!   the DR-0257 protected ZeroShare fee-claim policy, under one closed
 //!   kind-7 decoder; see `fee_claim_zero`. There is no `sign-fee-claim`
@@ -101,6 +104,7 @@ mod fee_claim_zero_wire;
 mod fsperm;
 mod keyfile;
 mod keygen;
+mod local_call_commands;
 mod positive_fee_split;
 mod positive_fee_split_approvals;
 mod positive_fee_split_commands;
@@ -172,6 +176,8 @@ where
     let action: &str = action.to_str().ok_or(ArgsError::NonUtf8Token)?;
     match action {
         "keygen" => keygen::run(args),
+        "approve-local-call" => local_call_commands::approve(args),
+        "sign-local-call" => local_call_commands::sign(args),
         "prepare-transfer" => asset_commands::prepare(args),
         "approve" => approve::run(args),
         "revoke" => revoke::run(args),
