@@ -101,6 +101,8 @@ pub(crate) mod error;
 mod fee_claim_zero;
 mod fee_claim_zero_commands;
 mod fee_claim_zero_wire;
+#[cfg(test)]
+mod final_transfer_uid_fixture;
 mod fsperm;
 mod keyfile;
 mod keygen;
