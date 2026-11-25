@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable distinct-UID/PTY generic paid Publish custody acceptance.
+"""Disposable distinct-UID/PTY generic paid Publish/Instantiate/Call acceptance.
 
 Requires already-built CLI and devnet_paid_contract_e2e test binaries. The
 container has no network access; its real SQLite/native-HTTP server and CLI
@@ -169,7 +169,7 @@ def private_file(path, data, uid):
     os.chown(path, uid, uid)
 
 
-def terminal_approve(args, expected_success, pins, request):
+def terminal_approve(args, expected_success, pins, request, nonce="0", operation="publish", content=None):
     master, slave = pty.openpty()
     proc = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=subprocess.PIPE, preexec_fn=as_uid(CUSTODY))
     os.close(slave)
@@ -199,18 +199,23 @@ def terminal_approve(args, expected_success, pins, request):
         review = dict(line.split("=", 1) for line in output.split(marker, 1)[0].decode().replace("\r", "").splitlines())
         expected = {
             "chain_id": "cli-paid-contract", "sender": pins["publisher"],
-            "request_id": request, "nonce": "0", "operation": "publish",
+            "request_id": request, "nonce": nonce, "operation": operation,
             "fee_source.id": pins["fee_source"], "fee_source.access": "write",
             "max_fee": "1000000", "gas_limit": "200000",
-            "origin.publisher": pins["publisher"], "origin.seed": "31" * 32,
-            "export_count": "2", "export[0]": "init", "export[1]": "run",
-            "wasm_bytes": pins["wasm_bytes"], "abi_bytes": pins["abi_bytes"],
         }
+        if content is None:
+            expected.update({
+                "origin.publisher": pins["publisher"], "origin.seed": "31" * 32,
+                "export_count": "2", "export[0]": "init", "export[1]": "run",
+                "wasm_bytes": pins["wasm_bytes"], "abi_bytes": pins["abi_bytes"],
+            })
+        else:
+            expected.update(content)
         if any(review.get(key) != value for key, value in expected.items()):
             raise RuntimeError("human-visible paid review differs from fixture pins")
         frame = dict(field.split("=", 1) for field in confirmation.decode().split()[1:])
         frame_expected = {
-            "sender": pins["publisher"], "request_id": request, "nonce": "0",
+            "sender": pins["publisher"], "request_id": request, "nonce": nonce,
             "policy": review["fee_policy_digest"], "fee_source": pins["fee_source"],
             "max_fee": "1000000",
         }
@@ -348,17 +353,94 @@ def inside():
             "contract", "paid-submit-signed", *common,
             "--signed-file", str(operator / "signed"),
             "--result-out", str(operator / "result"),
+            "--dependency-ref-out", str(operator / "contract.ref"),
         ), OPERATOR)
-        if "paid_status=Success" not in submitted.stdout or not (operator / "result").is_file():
+        if ("paid_status=Success" not in submitted.stdout
+                or not (operator / "result").is_file()
+                or not (operator / "contract.ref").is_file()):
             raise RuntimeError("protected paid Publish did not succeed")
         # Existing signed bytes remain replayable; revocation blocks only new signatures.
+
+        def next_paid(kind, request_byte, nonce, application_flags, content, derived_flag=None):
+            request_id = request_byte * 32
+            unsigned_path = operator / f"unsigned-{kind}"
+            custody_request = custody / f"request-{kind}"
+            custody_signed = custody / f"signed-{kind}"
+            operator_signed = operator / f"signed-{kind}"
+            result_path = operator / f"result-{kind}"
+            command(cli(
+                "contract", f"paid-{kind}", *common,
+                "--custody-socket", "/work/nonexistent-custody.sock", "--custody-uid", str(CUSTODY),
+                "--custody-expected-public-key", pins["publisher"],
+                "--fee-source", pins["fee_source"], "--fee-access", "write", "--max-fee", "1000000",
+                "--gas-limit", "200000", "--request-id", request_id, "--nonce", str(nonce),
+                *application_flags, "--unsigned-out", str(unsigned_path),
+            ), OPERATOR)
+            private_file(custody_request, unsigned_path.read_bytes(), CUSTODY)
+            sign_next = cli(
+                "custody", "sign-paid", "--config", str(custody / "config"),
+                "--policy-file", str(custody / "policy"), "--request-file", str(custody_request),
+                "--approvals-dir", str(approvals), "--endpoint", pins["endpoint"],
+                "--key-file", str(custody / "key"), "--out", str(custody_signed),
+            )
+            refused = command(sign_next, CUSTODY, success=False)
+            if "no approval for paid request" not in refused.stderr or custody_signed.exists():
+                raise RuntimeError(f"{kind} signed before approval")
+            approve_next = cli(
+                "custody", "approve-paid", "--config", str(custody / "config"),
+                "--policy-file", str(custody / "policy"), "--request-file", str(custody_request),
+                "--approvals-dir", str(approvals), "--endpoint", pins["endpoint"],
+                "--expires-in-seconds", "120",
+            )
+            terminal_approve(approve_next, expected_success=False, pins=pins, request=request_id,
+                             nonce=str(nonce), operation=kind, content=content)
+            if (approvals / request_id).exists():
+                raise RuntimeError(f"{kind} wrong confirmation wrote approval")
+            frame_sha, _ = terminal_approve(approve_next, expected_success=True, pins=pins,
+                                             request=request_id, nonce=str(nonce), operation=kind,
+                                             content=content)
+            command(sign_next, CUSTODY)
+            signed_bytes = custody_signed.read_bytes()
+            private_file(operator_signed, signed_bytes, OPERATOR)
+            submit_flags = [] if derived_flag is None else [derived_flag, str(operator / f"{kind}.ref")]
+            completed = command(cli(
+                "contract", "paid-submit-signed", *common,
+                "--signed-file", str(operator_signed), "--result-out", str(result_path),
+                *submit_flags,
+            ), OPERATOR)
+            if ("paid_status=Success" not in completed.stdout or not result_path.is_file()
+                    or (derived_flag is not None and not (operator / f"{kind}.ref").is_file())):
+                raise RuntimeError(f"protected paid {kind} did not succeed")
+            return {"operation": kind, "unsigned_bytes": unsigned_path.stat().st_size,
+                    "signed_bytes": len(signed_bytes), "pty_confirmation_sha256": frame_sha,
+                    "submitted": True, "refusals": ["sign_before_approval", "wrong_confirmation"]}
+
+        opaque_args = (server_dir / "args").read_bytes().hex()
+        instantiate = next_paid(
+            "instantiate", "42", 1,
+            ["--code-ref", str(operator / "contract.ref"), "--instance-seed", "32" * 32,
+             "--args", str(server_dir / "args")],
+            {"code.publisher": pins["publisher"], "code.seed": "31" * 32,
+             "instance.creator": pins["publisher"], "instance.seed": "32" * 32, "entrypoint": "init",
+             "arguments.opaque": opaque_args, "type_argument_count": "0"},
+            "--instance-ref-out",
+        )
+        call = next_paid(
+            "call", "43", 2,
+            ["--instance-ref", str(operator / "instantiate.ref"), "--entrypoint", "run",
+             "--access", str(server_dir / "access"), "--args", str(server_dir / "args")],
+            {"code.publisher": pins["publisher"], "code.seed": "31" * 32,
+             "instance.creator": pins["publisher"], "instance.seed": "32" * 32, "entrypoint": "run", "access_count": "0",
+             "arguments.opaque": opaque_args, "type_argument_count": "0"},
+        )
         print(json.dumps({
-            "source": "real SQLite/native HTTP", "operation": "paid Publish",
+            "source": "real SQLite/native HTTP", "operations": ["publish", "instantiate", "call"],
             "operator_uid": OPERATOR, "custody_uid": CUSTODY,
             "pty_confirmation_sha256": frame_hash,
             "unsigned_bytes": (operator / "unsigned").stat().st_size,
             "signed_bytes": len(signed), "submitted": True,
             "refusals": ["operator_key_read", "operator_approval_write", "sign_before_approval", "approval_without_pty", "wrong_confirmation", "sign_after_revoke"],
+            "instantiate": instantiate, "call": call,
         }, sort_keys=True))
     finally:
         stop.touch()
