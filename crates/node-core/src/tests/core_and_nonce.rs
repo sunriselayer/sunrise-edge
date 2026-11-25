@@ -1010,10 +1010,10 @@ fn authenticate_submit_transaction_event_happy_path_authenticates_transaction() 
 
 #[test]
 fn causal_owned_preinstalled_candidate_checks_verified_lane_and_nonempty_manifest() {
+    use crate::genesis::tests::{causal_bonded_manifest, freeze_bonded_manifest};
     use crate::genesis::{
         VerifiedGenesisRoot, encode_genesis_manifest, genesis_manifest_commitment,
     };
-    use crate::genesis::tests::{causal_bonded_manifest, freeze_bonded_manifest};
 
     let profile = |manifest: crate::genesis::GenesisManifest| {
         let resolver = crate::genesis::tests::resolver();
@@ -1039,9 +1039,8 @@ fn causal_owned_preinstalled_candidate_checks_verified_lane_and_nonempty_manifes
     .unwrap();
     let legacy_protocol_config = active_protocol_config(0xD8);
     let mut protocol_config = legacy_protocol_config.clone();
-    protocol_config.transaction_auth_profile = Some(
-        TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key(),
-    );
+    protocol_config.transaction_auth_profile =
+        Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
     let signing_key = dev_signing_key(0x71);
     let manifest = manifest_with(vec![AccessEntry {
         object_ref: sample_object_ref(0x11),
@@ -1097,8 +1096,7 @@ fn causal_owned_preinstalled_candidate_checks_verified_lane_and_nonempty_manifes
             .is_err()
     );
     assert_eq!(
-        candidate(0x13, AccessManifest::new())
-            .require_causal_owned_preinstalled_candidate(&causal),
+        candidate(0x13, AccessManifest::new()).require_causal_owned_preinstalled_candidate(&causal),
         Err(NodeCoreError::PreinstalledModuleZeroObjectAccess)
     );
     let foreign_config = NodeConfig::new(
@@ -1144,7 +1142,9 @@ fn causal_owned_preinstalled_candidate_checks_verified_lane_and_nonempty_manifes
     .unwrap_err();
     assert_eq!(
         error,
-        NodeCoreError::PersistenceInvariant("pure owned candidate has no durable mutation authority")
+        NodeCoreError::PersistenceInvariant(
+            "pure owned candidate has no durable mutation authority"
+        )
     );
     assert_eq!(machine.calls.load(Ordering::SeqCst), 0);
     assert!(store.commits.lock().unwrap().is_empty());
