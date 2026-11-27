@@ -2780,6 +2780,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "validator-set",
+ "wat",
  "zeroize",
 ]
 

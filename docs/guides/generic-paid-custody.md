@@ -83,6 +83,15 @@ python3 scripts/check-docker-generic-paid-custody.py \
   --test-binary /absolute/path/to/devnet_paid_contract_e2e-HASH
 ```
 
+For the FastVote route, build the `fastvote_network_e2e` test binary from the
+same source and use `--fastvote` with that binary in place of
+`devnet_paid_contract_e2e`. This runs four real SQLite/native-HTTP validators
+with transaction-auth profile 2. It collects and applies a FastVote
+certificate for each saved protected-signed Publish, Instantiate, and Call,
+then replays each saved certificate and compares exact results. It also rejects
+a malformed certificate and mismatched chain pin for Publish, and another
+intent's certificate for Instantiate and Call.
+
 The fixture uses a disposable fixed key and an isolated Docker network with
-only loopback traffic. It does not cover FastVote replay, an enrolled operator
-key, or a public deployment.
+only loopback traffic. It does not cover an enrolled operator key or a public
+deployment.

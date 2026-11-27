@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Disposable distinct-UID/PTY generic paid Publish/Instantiate/Call acceptance.
 
-Requires already-built CLI and devnet_paid_contract_e2e test binaries. The
-container has no network access; its real SQLite/native-HTTP server and CLI
-communicate on loopback. The test uses a disposable fixed key, never a live key.
+Requires already-built CLI and either devnet_paid_contract_e2e (direct mode) or
+fastvote_network_e2e (--fastvote mode) test binaries. The container has no
+network access; its real SQLite/native-HTTP server and CLI communicate on
+loopback. The test uses a disposable fixed key, never a live key.
 """
 
 import argparse
@@ -71,7 +72,7 @@ def mount(src, dst):
     return ["--mount", f"type=bind,source={src},target={dst},readonly"]
 
 
-def host(cli, harness):
+def host(cli, harness, fastvote=False):
     for path in (cli, harness):
         if not path.is_absolute() or not path.is_file() or path.is_symlink():
             raise RuntimeError("exact regular absolute binary paths required")
@@ -113,6 +114,8 @@ def host(cli, harness):
     for name_ in sorted(libs_a):
         args.extend(mount(library_copy / name_, f"{LIB}/{name_}"))
     args.extend(["--entrypoint", "/usr/local/bin/python3", IMAGE, "-I", "-B", "/mnt/fixture.py", "--inside"])
+    if fastvote:
+        args.append("--fastvote")
     container_id = None
     try:
         container_id = checked(args).stdout.strip()
@@ -198,7 +201,7 @@ def terminal_approve(args, expected_success, pins, request, nonce="0", operation
             raise RuntimeError("incorrect approval confirmation frame")
         review = dict(line.split("=", 1) for line in output.split(marker, 1)[0].decode().replace("\r", "").splitlines())
         expected = {
-            "chain_id": "cli-paid-contract", "sender": pins["publisher"],
+            "chain_id": pins.get("chain_id", "cli-paid-contract"), "sender": pins["publisher"],
             "request_id": request, "nonce": nonce, "operation": operation,
             "fee_source.id": pins["fee_source"], "fee_source.access": "write",
             "max_fee": "1000000", "gas_limit": "200000",
@@ -456,15 +459,209 @@ def inside():
             raise RuntimeError("fixture deadline exceeded")
 
 
+def inside_fastvote():
+    """Run the same protected CLI custody path against four real SQLite validators."""
+    deadline = time.monotonic() + 135
+    server_dir = ROOT / "server"
+    ready = ROOT / "paid-ready"
+    stop = ROOT / "paid-stop"
+    log_path = ROOT / "fastvote-server.log"
+    env = dict(os.environ, SUNRISE_GENERIC_PAID_FASTVOTE_FIXTURE_DIR=str(server_dir))
+    with log_path.open("wb") as log:
+        server = subprocess.Popen(
+            [LD, "--library-path", LIB, HARNESS, "--ignored", "--exact",
+             "generic_paid_custody_fastvote_fixture_server", "--nocapture"],
+            stdout=log, stderr=log, env=env,
+        )
+        try:
+            while not ready.exists():
+                if server.poll() is not None:
+                    raise RuntimeError(f"FastVote server exited before ready: {log_path.read_bytes()[-1800:]!r}")
+                if time.monotonic() > deadline:
+                    raise RuntimeError("FastVote server startup deadline")
+                time.sleep(0.05)
+            pins = dict(line.split("=", 1) for line in ready.read_text().splitlines())
+            for key in ("endpoint", "chain_id", "protocol_version", "domain", "publisher",
+                        "fee_source", "genesis_digest"):
+                if key not in pins:
+                    raise RuntimeError(f"missing FastVote pin: {key}")
+            context = dict(line.split("=", 1) for line in
+                           command(cli("context", "--endpoint", pins["endpoint"]),
+                                   OPERATOR).stdout.splitlines())
+            expected_context = {
+                "chain_id": pins["chain_id"], "protocol_version": pins["protocol_version"],
+                "epoch": "0", "transaction_auth_profile_id": "2", "domain": pins["domain"],
+            }
+            if any(context.get(key) != value for key, value in expected_context.items()):
+                raise RuntimeError("FastVote host context does not match signed-genesis fixture pins")
+            pins["wasm_bytes"] = str((server_dir / "contract.wasm").stat().st_size)
+            pins["abi_bytes"] = str((server_dir / "contract.abi").stat().st_size)
+            operator = ROOT / "operator"
+            custody = ROOT / "custody"
+            private_dir(operator, OPERATOR)
+            private_dir(custody, CUSTODY)
+            approvals = custody / "approvals"
+            private_dir(approvals, CUSTODY)
+            private_file(custody / "key", b"21" * 32 + b"\n", CUSTODY)
+            private_file(custody / "config", (
+                f"chain_id={pins['chain_id']}\nprotocol_version={pins['protocol_version']}\nepoch=0\n"
+                f"hash_suite_id=1\ndomain={pins['domain']}\npublisher_public_key={pins['publisher']}\n"
+                f"operator_uid={OPERATOR}\n"
+            ).encode(), CUSTODY)
+            private_file(custody / "policy", (server_dir / "paid-policy").read_bytes(), CUSTODY)
+            common = [
+                "--endpoint", pins["endpoint"], "--expected-chain-id", pins["chain_id"],
+                "--expected-protocol-version", pins["protocol_version"], "--expected-epoch", "0",
+                "--expected-hash-suite-id", "1", "--expected-domain", pins["domain"],
+            ]
+            expected_only = common[2:]
+            network = [
+                "--fastvote-network", str(server_dir / "fastvote-network"),
+                "--fastvote-genesis-manifest", str(server_dir / "genesis-manifest"),
+                "--fastvote-expected-genesis-digest", pins["genesis_digest"],
+                "--fastvote-deadline-seconds", "30", "--fastvote-per-request-cap-seconds", "10",
+            ]
+            previous_certificate = None
+
+            def protected(kind, request_byte, nonce, application_flags, content, derived_flag=None):
+                nonlocal previous_certificate
+                request_id = request_byte * 32
+                unsigned = operator / f"unsigned-{kind}"
+                custody_request = custody / f"request-{kind}"
+                signed_path = custody / f"signed-{kind}"
+                operator_signed = operator / f"signed-{kind}"
+                certificate = operator / f"certificate-{kind}"
+                result = operator / f"result-{kind}"
+                command(cli(
+                    "contract", f"paid-{kind}", *common, *network,
+                    "--custody-socket", "/work/nonexistent-custody.sock", "--custody-uid", str(CUSTODY),
+                    "--custody-expected-public-key", pins["publisher"],
+                    "--fee-source", pins["fee_source"], "--fee-access", "write", "--max-fee", "1000000",
+                    "--gas-limit", "200000", "--request-id", request_id, "--nonce", str(nonce),
+                    *application_flags, "--unsigned-out", str(unsigned),
+                ), OPERATOR)
+                private_file(custody_request, unsigned.read_bytes(), CUSTODY)
+                approve = cli(
+                    "custody", "approve-paid", "--config", str(custody / "config"),
+                    "--policy-file", str(custody / "policy"), "--request-file", str(custody_request),
+                    "--approvals-dir", str(approvals), "--endpoint", pins["endpoint"],
+                    "--expires-in-seconds", "120",
+                )
+                sign = cli(
+                    "custody", "sign-paid", "--config", str(custody / "config"),
+                    "--policy-file", str(custody / "policy"), "--request-file", str(custody_request),
+                    "--approvals-dir", str(approvals), "--endpoint", pins["endpoint"],
+                    "--key-file", str(custody / "key"), "--out", str(signed_path),
+                )
+                before = command(sign, CUSTODY, success=False)
+                if "no approval for paid request" not in before.stderr or signed_path.exists():
+                    raise RuntimeError(f"FastVote {kind} signed before approval")
+                terminal_approve(approve, False, pins, request_id, str(nonce), kind, content)
+                if (approvals / request_id).exists():
+                    raise RuntimeError(f"FastVote {kind} wrong confirmation created approval")
+                frame_hash, _ = terminal_approve(approve, True, pins, request_id, str(nonce), kind, content)
+                command(sign, CUSTODY)
+                signed = signed_path.read_bytes()
+                private_file(operator_signed, signed, OPERATOR)
+                replay = ["contract", "fastvote-replay", *expected_only, *network,
+                          "--submission", str(operator_signed)]
+                if kind == "publish":
+                    wrong_context = expected_only.copy()
+                    wrong_context[wrong_context.index("--expected-chain-id") + 1] += "-wrong"
+                    wrong_chain = command(cli("contract", "fastvote-replay", *wrong_context,
+                                              *network, "--submission", str(operator_signed)),
+                                          OPERATOR, success=False)
+                    if "genesis manifest commitment does not match" not in wrong_chain.stderr.lower():
+                        raise RuntimeError(f"FastVote wrong chain refused for another reason: {wrong_chain.stderr[-1200:]}")
+                if previous_certificate is not None:
+                    mismatch = command(cli(*replay, "--certificate", str(previous_certificate)),
+                                       OPERATOR, success=False)
+                    if ("fastvote apply preflight rejected" not in mismatch.stderr.lower()
+                            or "expected the exact submitted intent's own digest" not in mismatch.stderr.lower()):
+                        raise RuntimeError(f"FastVote {kind} mismatched certificate refused for another reason: {mismatch.stderr[-1200:]}")
+                elif kind == "publish":
+                    private_file(operator / "corrupt-certificate", b"\x00", OPERATOR)
+                    malformed = command(cli(*replay, "--certificate", str(operator / "corrupt-certificate")),
+                                        OPERATOR, success=False)
+                    if "cannot read exact saved certificate artifact" not in malformed.stderr.lower():
+                        raise RuntimeError(f"malformed FastVote certificate refused for another reason: {malformed.stderr[-1200:]}")
+                derived = [] if derived_flag is None else [derived_flag, str(operator / f"{kind}.ref")]
+                applied = command(cli(*replay, "--fastvote-certificate-out", str(certificate),
+                                      "--result-out", str(result), *derived), OPERATOR, timeout=45)
+                if ("paid_status=Success" not in applied.stdout or not certificate.is_file()
+                        or not result.is_file()
+                        or (derived_flag is not None and not (operator / f"{kind}.ref").is_file())):
+                    raise RuntimeError(f"FastVote {kind} did not apply")
+                repeat = operator / f"result-replay-{kind}"
+                replayed = command(cli(*replay, "--certificate", str(certificate),
+                                       "--result-out", str(repeat)), OPERATOR, timeout=45)
+                if "paid_status=Success" not in replayed.stdout or repeat.read_bytes() != result.read_bytes():
+                    raise RuntimeError(f"FastVote {kind} exact certificate replay differed")
+                previous_certificate = certificate
+                return {"operation": kind, "unsigned_bytes": unsigned.stat().st_size,
+                        "signed_bytes": len(signed), "certificate_bytes": certificate.stat().st_size,
+                        "pty_confirmation_sha256": frame_hash, "applied": True,
+                        "exact_replay": True,
+                        "refusals": (["sign_before_approval", "wrong_confirmation", "bad_certificate",
+                                      "wrong_chain"] if kind == "publish" else
+                                     ["sign_before_approval", "wrong_confirmation", "bad_certificate"])}
+
+            publish = protected(
+                "publish", "41", 0,
+                ["--wasm", str(server_dir / "contract.wasm"), "--abi", str(server_dir / "contract.abi"),
+                 "--entrypoints", "init,run", "--origin-seed", "31" * 32],
+                {"origin.publisher": pins["publisher"], "origin.seed": "31" * 32,
+                 "export_count": "2", "export[0]": "init", "export[1]": "run",
+                 "wasm_bytes": pins["wasm_bytes"], "abi_bytes": pins["abi_bytes"]},
+                "--dependency-ref-out",
+            )
+            opaque_args = (server_dir / "args").read_bytes().hex()
+            instantiate = protected(
+                "instantiate", "42", 1,
+                ["--code-ref", str(operator / "publish.ref"), "--instance-seed", "32" * 32,
+                 "--args", str(server_dir / "args")],
+                {"code.publisher": pins["publisher"], "code.seed": "31" * 32,
+                 "instance.creator": pins["publisher"], "instance.seed": "32" * 32,
+                 "entrypoint": "init", "arguments.opaque": opaque_args,
+                 "type_argument_count": "0"},
+                "--instance-ref-out",
+            )
+            call = protected(
+                "call", "43", 2,
+                ["--instance-ref", str(operator / "instantiate.ref"), "--entrypoint", "run",
+                 "--access", str(server_dir / "access"), "--args", str(server_dir / "args")],
+                {"code.publisher": pins["publisher"], "code.seed": "31" * 32,
+                 "instance.creator": pins["publisher"], "instance.seed": "32" * 32,
+                 "entrypoint": "run", "arguments.opaque": opaque_args,
+                 "type_argument_count": "0", "access_count": "0"},
+            )
+            print(json.dumps({"mode": "fastvote", "source": "four real SQLite/native-HTTP validators",
+                              "operator_uid": OPERATOR, "custody_uid": CUSTODY,
+                              "publish": publish, "instantiate": instantiate, "call": call}, sort_keys=True))
+        finally:
+            stop.touch()
+            try:
+                server.communicate(timeout=8)
+                if server.returncode:
+                    raise RuntimeError(f"FastVote server exit={server.returncode}: {log_path.read_bytes()[-1800:]!r}")
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.communicate(timeout=2)
+                raise RuntimeError("FastVote fixture server failed to stop")
+            if time.monotonic() > deadline:
+                raise RuntimeError("FastVote fixture deadline exceeded")
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--cli-binary", type=Path)
     p.add_argument("--test-binary", type=Path)
     p.add_argument("--inside", action="store_true")
+    p.add_argument("--fastvote", action="store_true")
     a = p.parse_args()
     if a.inside:
-        inside()
+        inside_fastvote() if a.fastvote else inside()
     elif a.cli_binary and a.test_binary:
-        host(a.cli_binary.resolve(), a.test_binary.resolve())
+        host(a.cli_binary.resolve(), a.test_binary.resolve(), a.fastvote)
     else:
         p.error("both exact binary paths required")
