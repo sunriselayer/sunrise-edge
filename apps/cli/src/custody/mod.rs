@@ -36,6 +36,8 @@
 //! - `custody approve-local-call`/`sign-local-call` consume a saved canonical
 //!   local/general Call under this process's pinned config and a dedicated
 //!   approval directory, with exact signed-frame approval and no network.
+//!   `approve-local-instantiate`/`sign-local-instantiate` do the same for a
+//!   saved Instantiate with a separate `local-instantiate` approval directory.
 //! - `custody serve-fee-final-transfer` uses DR-0297's separate kind-6 phase
 //!   3/4 full-balance transfer owner. Each worker refuses the other's phases;
 //!   both phase approvals use the same permanent request tombstone.
@@ -187,6 +189,8 @@ where
         "keygen" => keygen::run(args),
         "approve-local-call" => local_call_commands::approve(args),
         "sign-local-call" => local_call_commands::sign(args),
+        "approve-local-instantiate" => local_call_commands::approve_instantiate(args),
+        "sign-local-instantiate" => local_call_commands::sign_instantiate(args),
         "prepare-transfer" => asset_commands::prepare(args),
         "approve" => approve::run(args),
         "revoke" => revoke::run(args),

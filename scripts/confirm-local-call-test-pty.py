@@ -19,7 +19,10 @@ def main():
                                start_new_session=True)
     os.close(slave)
     output = bytearray()
-    challenge = b"APPROVE-LOCAL-CALL sender="
+    # The approving command selects the mode; Call remains the default.
+    kind = "instantiate" if "approve-local-instantiate" in command else "call"
+    challenge = f"APPROVE-LOCAL-{kind.upper()} sender=".encode()
+    approved = f"approved_local_{kind}=true".encode()
     answered = False
     deadline = time.monotonic() + 30
     try:
@@ -53,13 +56,13 @@ def main():
             raise RuntimeError("approval confirmation was not displayed: " + repr(output[-3000:]))
         code = process.wait(timeout=3)
         if reject:
-            if code == 0 or b"confirmation" not in output or b"approved_local_call=true" in output:
+            if code == 0 or b"confirmation" not in output or approved in output:
                 raise RuntimeError("wrong confirmation was accepted: " + repr(output[-3000:]))
-            print("local_call_real_pty_refusal=passed", flush=True)
+            print(f"local_{kind}_real_pty_refusal=passed", flush=True)
         else:
-            if code != 0 or b"approved_local_call=true" not in output:
+            if code != 0 or approved not in output:
                 raise RuntimeError("approval failed: " + repr(output[-3000:]))
-            print("local_call_real_pty_approval=passed", flush=True)
+            print(f"local_{kind}_real_pty_approval=passed", flush=True)
     finally:
         if process.poll() is None:
             process.kill()

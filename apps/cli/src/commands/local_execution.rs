@@ -78,6 +78,9 @@ fn submit_with_outputs(
 }
 
 pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Result<(), CliError> {
+    // `prepare-*` exports an unsigned intent: no signer, result or submission.
+    let prepare: bool = matches!(action, "prepare-call" | "prepare-instantiate");
+    let instantiate: bool = matches!(action, "instantiate" | "prepare-instantiate");
     let mut specs = vec![
         switch("--general-calls"),
         scalar("--endpoint"),
@@ -95,7 +98,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             scalar("--instance-ref-out"),
         ]);
     } else {
-        if action == "prepare-call" {
+        if prepare {
             specs.extend([scalar("--sender"), scalar("--unsigned-out")]);
         } else {
             specs.extend(signer_flag_specs());
@@ -108,10 +111,10 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
             scalar("--nonce"),
             scalar("--authorizations"),
         ]);
-        if action != "prepare-call" {
+        if !prepare {
             specs.extend([scalar("--result-out"), scalar("--submission-out")]);
         }
-        if action == "instantiate" {
+        if instantiate {
             specs.extend([scalar("--code-ref"), scalar("--instance-seed")]);
         } else {
             specs.extend([
@@ -125,7 +128,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     if parsed.get("--authorizations").is_some() && !parsed.is_present("--general-calls") {
         return Err(invalid("--authorizations requires --general-calls"));
     }
-    let signer: Option<LocalSigner> = if action == "query-instance" || action == "prepare-call" {
+    let signer: Option<LocalSigner> = if action == "query-instance" || prepare {
         None
     } else {
         match parse_signer_selection(&parsed)? {
@@ -186,7 +189,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         }
         return Ok(());
     }
-    let sender: Address = if action == "prepare-call" {
+    let sender: Address = if prepare {
         Address::new(decode_hex_32("--sender", parsed.require("--sender")?)?)
     } else {
         signer
@@ -273,7 +276,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         }
         value.next_nonce()
     };
-    let mode: LocalExecutionMode = if action == "instantiate" {
+    let mode: LocalExecutionMode = if instantiate {
         LocalExecutionMode::Instantiate
     } else {
         LocalExecutionMode::Call
@@ -285,7 +288,7 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         nonce,
         code,
         instance: instance_target(&resolver, &instance).map_err(failure)?,
-        entrypoint: if action == "instantiate" {
+        entrypoint: if instantiate {
             initializer
         } else {
             parsed.require("--entrypoint")?.to_owned()
@@ -314,14 +317,17 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
         authorizations,
         &scopes,
     )?;
-    if action == "prepare-call" {
+    if prepare {
         let review = LocalExecutionReview::build(&prepared).map_err(failure)?;
         print!("{}", review.display());
         crate::custody::write_review_preimage(
             Path::new(parsed.require("--unsigned-out")?),
             review.intent_bytes(),
         )?;
-        println!("unsigned_local_call_exported=true\nrequest_id={request_id}\nnonce={nonce}");
+        println!(
+            "unsigned_local_{}_exported=true\nrequest_id={request_id}\nnonce={nonce}",
+            if instantiate { "instantiate" } else { "call" }
+        );
         return Ok(());
     }
     let signed = prepared
@@ -356,12 +362,19 @@ pub(super) fn run<I: IntoIterator<Item = OsString>>(action: &str, args: I) -> Re
     Ok(())
 }
 
-/// Submits an already protected-signed canonical Call without loading any
-/// signing key. The expected context and local/general policy are selected
-/// independently of the signed file and checked before network submission.
-pub(super) fn submit_signed_call<I: IntoIterator<Item = OsString>>(
+/// Submits an already protected-signed canonical Call or Instantiate without
+/// loading any signing key. The expected context, local/general policy and
+/// mode (from the command, not the file) are selected independently of the
+/// signed file and checked before network submission.
+pub(super) fn submit_signed<I: IntoIterator<Item = OsString>>(
+    action: &str,
     args: I,
 ) -> Result<(), CliError> {
+    let (expected_mode, noun) = if action == "submit-signed-instantiate" {
+        (LocalExecutionMode::Instantiate, "Instantiate")
+    } else {
+        (LocalExecutionMode::Call, "Call")
+    };
     let mut specs = vec![
         switch("--general-calls"),
         scalar("--endpoint"),
@@ -394,10 +407,23 @@ pub(super) fn submit_signed_call<I: IntoIterator<Item = OsString>>(
         MAX_LOCAL_EXECUTION_INTENT_BYTES,
     )?;
     let signed = decode_signed_local_execution(&bytes).map_err(failure)?;
-    if signed.intent.mode != LocalExecutionMode::Call
+    if signed.intent.mode != expected_mode
         || encode_signed_local_execution(&signed).map_err(failure)? != bytes
     {
-        return Err(invalid("signed input is not a canonical local Call"));
+        return Err(invalid(if noun == "Call" {
+            "signed input is not a canonical local Call"
+        } else {
+            "signed input is not a canonical local Instantiate"
+        }));
+    }
+    if expected_mode == LocalExecutionMode::Instantiate
+        && (signed.intent.call.instance.creator != signed.intent.call.sender
+            || signed.intent.call.instance.revision != 1
+            || !signed.intent.call.access.entries.is_empty())
+    {
+        return Err(invalid(
+            "signed Instantiate does not bind sender as creator at revision 1 with empty access",
+        ));
     }
     authenticate_local_execution(&resolver, &policy, &bytes).map_err(failure)?;
     let request_id = RequestId::new(signed.intent.call.request_id)?;

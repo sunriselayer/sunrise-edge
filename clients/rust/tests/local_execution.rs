@@ -130,9 +130,49 @@ fn prepared_local_and_general_execution_preserve_independent_signed_bytes() {
             let mut trailing = review.intent_bytes().to_vec();
             trailing.push(0);
             assert!(LocalExecutionReview::from_saved_call(&trailing, &resolver, &policy).is_err());
+            assert!(
+                LocalExecutionReview::from_saved_instantiate(
+                    review.intent_bytes(),
+                    &resolver,
+                    &policy
+                )
+                .is_err()
+            );
         } else {
             assert!(
                 LocalExecutionReview::from_saved_call(review.intent_bytes(), &resolver, &policy,)
+                    .is_err()
+            );
+            let saved = LocalExecutionReview::from_saved_instantiate(
+                review.intent_bytes(),
+                &resolver,
+                &policy,
+            )
+            .unwrap();
+            assert_eq!(saved.intent_bytes(), review.intent_bytes());
+            assert_eq!(saved.signable_frame(), prepared.signable_frame());
+            assert!(saved.display().contains("mode=instantiate\n"));
+            let wrong_policy = if profile == 2 {
+                LocalExecutionPolicy::general(call.context.clone())
+            } else {
+                LocalExecutionPolicy::new(call.context.clone())
+            };
+            assert!(
+                LocalExecutionReview::from_saved_instantiate(
+                    review.intent_bytes(),
+                    &resolver,
+                    &wrong_policy,
+                )
+                .is_err()
+            );
+            let mut foreign = prepared.intent().clone();
+            foreign.call.instance.creator = [9; 32];
+            assert!(encode_local_execution_intent(&foreign).is_err());
+            let mut stale_revision = prepared.intent().clone();
+            stale_revision.call.instance.revision = 2;
+            let stale_bytes = encode_local_execution_intent(&stale_revision).unwrap();
+            assert!(
+                LocalExecutionReview::from_saved_instantiate(&stale_bytes, &resolver, &policy)
                     .is_err()
             );
         }

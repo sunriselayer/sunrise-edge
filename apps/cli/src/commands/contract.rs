@@ -24,12 +24,12 @@ where
     if action == "publish" || action == "query" || action == "preview" {
         return super::publication::run(action, args);
     }
-    if action == "submit-signed-call" {
-        return super::local_execution::submit_signed_call(args);
+    if action == "submit-signed-call" || action == "submit-signed-instantiate" {
+        return super::local_execution::submit_signed(action, args);
     }
     if matches!(
         action,
-        "instantiate" | "call" | "prepare-call" | "query-instance"
+        "instantiate" | "call" | "prepare-call" | "prepare-instantiate" | "query-instance"
     ) {
         return super::local_execution::run(action, args);
     }

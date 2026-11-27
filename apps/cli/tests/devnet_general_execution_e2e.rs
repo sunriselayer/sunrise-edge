@@ -500,8 +500,10 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
                            attempt: usize|
              -> LocalExecutionResult {
                 let (action, mut args) = flags(name, nonce, argument);
-                if name == "fulfil" && nonce == 5 {
-                    assert_eq!(action, "call");
+                // Saved Instantiate (`configure`) and saved Call (`fulfil`) both use protected custody.
+                let instantiate = name == "configure";
+                if instantiate || (name == "fulfil" && nonce == 5) {
+                    assert_eq!(action, if instantiate { "instantiate" } else { "call" });
                     args.drain(0..2); // replace development --seed-file with public sender.
                     args.extend([
                         "--sender".into(),
@@ -509,7 +511,7 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
                         "--unsigned-out".into(),
                         file(&format!("unsigned-{nonce}-{attempt}")),
                     ]);
-                    invoke("prepare-call", args).unwrap();
+                    invoke(if instantiate { "prepare-instantiate" } else { "prepare-call" }, args).unwrap();
                     let unsigned = fs::read(file(&format!("unsigned-{nonce}-{attempt}"))).unwrap();
                     let policy = LocalExecutionPolicy::general(
                         PublicationContext::new(
@@ -519,15 +521,21 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
                         )
                         .unwrap(),
                     );
-                    let review =
+                    let review = if instantiate {
+                        LocalExecutionReview::from_saved_instantiate(&unsigned, &resolver, &policy)
+                    } else {
                         LocalExecutionReview::from_saved_call(&unsigned, &resolver, &policy)
-                            .unwrap();
-                    assert!(review.display().contains("authorization_count=1\n"));
+                    }
+                    .unwrap();
+                    if !instantiate {
+                        assert!(review.display().contains("authorization_count=1\n"));
+                    }
+                    let kind = if instantiate { "instantiate" } else { "call" };
                     let custody_dir = path.join(format!("custody-{attempt}"));
                     let approval_dir = custody_dir.join("approvals");
-                    let local_approval_dir = approval_dir.join("local-call");
+                    let local_approval_dir = approval_dir.join(format!("local-{kind}"));
                     for dir in [&custody_dir, &approval_dir, &local_approval_dir] {
-                        fs::create_dir(dir).unwrap();
+                        if !dir.exists() { fs::create_dir(dir).unwrap(); }
                         #[cfg(unix)] {
                             use std::os::unix::fs::PermissionsExt;
                             fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -545,20 +553,27 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
                         fs::set_permissions(&custody_config, fs::Permissions::from_mode(0o600)).unwrap();
                     }
                     let unsigned_file = file(&format!("unsigned-{nonce}-{attempt}"));
-                    let approval = std::process::Command::new("python3")
-                        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/confirm-local-call-test-pty.py"))
-                        .arg(env!("CARGO_BIN_EXE_sunrise-edge-cli"))
-                        .args(["custody", "approve-local-call", "--general-calls", "--config"])
-                        .arg(&custody_config)
-                        .arg("--unsigned-file").arg(&unsigned_file)
-                        .arg("--approvals-dir").arg(&approval_dir)
-                        .args(["--expires-in-seconds", "120"])
-                        .output().unwrap();
-                    assert!(approval.status.success(), "PTY approval: {}", String::from_utf8_lossy(&approval.stderr));
-                    assert!(String::from_utf8_lossy(&approval.stdout).contains("local_call_real_pty_approval=passed"));
+                    // Instantiate also proves a wrong confirmation leaves no approval; Call stays approval-only.
+                    for reject in if instantiate { vec![true, false] } else { vec![false] } {
+                        let mut command = std::process::Command::new("python3");
+                        command.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/confirm-local-call-test-pty.py"));
+                        if reject { command.arg("--reject"); }
+                        let approval = command
+                            .arg(env!("CARGO_BIN_EXE_sunrise-edge-cli"))
+                            .args(["custody", format!("approve-local-{kind}").as_str(), "--general-calls", "--config"])
+                            .arg(&custody_config)
+                            .arg("--unsigned-file").arg(&unsigned_file)
+                            .arg("--approvals-dir").arg(&approval_dir)
+                            .args(["--expires-in-seconds", "120"])
+                            .output().unwrap();
+                        assert!(approval.status.success(), "PTY approval: {}", String::from_utf8_lossy(&approval.stderr));
+                        let marker = format!("local_{kind}_real_pty_{}=passed", if reject {"refusal"} else {"approval"});
+                        assert!(String::from_utf8_lossy(&approval.stdout).contains(&marker));
+                        if reject { assert!(fs::read_dir(&local_approval_dir).unwrap().next().is_none()); }
+                    }
                     let protected_file = file(&format!("protected-{nonce}-{attempt}"));
                     sunrise_edge_cli::run(vec![
-                        OsString::from("custody"), OsString::from("sign-local-call"),
+                        OsString::from("custody"), OsString::from(format!("sign-local-{kind}")),
                         OsString::from("--general-calls"),
                         OsString::from("--config"), custody_config.into_os_string(),
                         OsString::from("--unsigned-file"), OsString::from(unsigned_file.clone()),
@@ -572,7 +587,7 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
                     assert_eq!(signed.signature.to_vec(), LocalSigner::from_seed([7; 32])
                         .sign_framed(review.signable_frame()).unwrap());
                     invoke(
-                        "submit-signed-call",
+                        &format!("submit-signed-{kind}"),
                         vec![
                             "--signed-file".into(),
                             protected_file,
@@ -590,6 +605,19 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
                             fs::read(file(&format!("signed-{nonce}-{attempt}"))).unwrap(),
                             fs::read(file(&format!("signed-{nonce}-0"))).unwrap()
                         );
+                        if instantiate {
+                            let (direct_action, mut direct_args) = flags(name, nonce, argument);
+                            direct_args.extend([
+                                "--result-out".into(), file("direct-configure-result"),
+                                "--submission-out".into(), file("direct-configure-signed"),
+                            ]);
+                            invoke(direct_action, direct_args).unwrap();
+                            assert_eq!(fs::read(file("direct-configure-result")).unwrap(), bytes);
+                            assert_eq!(
+                                fs::read(file("direct-configure-signed")).unwrap(),
+                                fs::read(file(&format!("signed-{nonce}-{attempt}"))).unwrap()
+                            );
+                        }
                     }
                     return decode_local_execution_result(&bytes).unwrap();
                 }

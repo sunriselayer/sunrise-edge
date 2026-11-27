@@ -292,31 +292,36 @@ async fn cli_inventory_success_trap_and_exact_files_survive_restart() {
                 }
             }
             let execute = |name: &str, nonce: u64, argument: &str, trapped: bool| {
-                if name == "reserve" && nonce == 3 {
-                    invoke(
-                        "prepare-call",
-                        vec![
-                            "--sender".into(),
-                            publisher.clone(),
-                            "--args".into(),
-                            file(argument),
-                            "--gas-limit".into(),
-                            "1000000".into(),
-                            "--request-id".into(),
-                            format!("{:02x}", nonce + 10).repeat(32),
-                            "--nonce".into(),
-                            nonce.to_string(),
-                            "--instance-ref".into(),
-                            file("instance-0"),
-                            "--entrypoint".into(),
-                            name.into(),
-                            "--access".into(),
-                            file(&format!("access-{nonce}")),
-                            "--unsigned-out".into(),
-                            file(&format!("unsigned-{nonce}-{boot_index}")),
-                        ],
-                    )
-                    .unwrap();
+                // Saved Instantiate (`init`) and saved Call (`reserve`) both use protected custody.
+                let instantiate = name == "init";
+                if instantiate || (name == "reserve" && nonce == 3) {
+                    let mut prepare: Vec<String> = vec![
+                        "--sender".into(),
+                        publisher.clone(),
+                        "--args".into(),
+                        file(argument),
+                        "--gas-limit".into(),
+                        "1000000".into(),
+                        "--request-id".into(),
+                        format!("{:02x}", nonce + 10).repeat(32),
+                        "--nonce".into(),
+                        nonce.to_string(),
+                        "--unsigned-out".into(),
+                        file(&format!("unsigned-{nonce}-{boot_index}")),
+                    ];
+                    if instantiate {
+                        prepare.extend([
+                            "--code-ref".into(), file("warehouse.ref"),
+                            "--instance-seed".into(), "03".repeat(32),
+                        ]);
+                    } else {
+                        prepare.extend([
+                            "--instance-ref".into(), file("instance-0"),
+                            "--entrypoint".into(), name.into(),
+                            "--access".into(), file(&format!("access-{nonce}")),
+                        ]);
+                    }
+                    invoke(if instantiate { "prepare-instantiate" } else { "prepare-call" }, prepare).unwrap();
                     let unsigned =
                         fs::read(file(&format!("unsigned-{nonce}-{boot_index}"))).unwrap();
                     let policy = LocalExecutionPolicy::new(
@@ -327,14 +332,18 @@ async fn cli_inventory_success_trap_and_exact_files_survive_restart() {
                         )
                         .unwrap(),
                     );
-                    let review =
+                    let review = if instantiate {
+                        LocalExecutionReview::from_saved_instantiate(&unsigned, &resolver, &policy)
+                    } else {
                         LocalExecutionReview::from_saved_call(&unsigned, &resolver, &policy)
-                            .unwrap();
+                    }
+                    .unwrap();
+                    let kind = if instantiate { "instantiate" } else { "call" };
                     let custody_dir = path.join(format!("custody-{boot_index}"));
                     let approval_dir = custody_dir.join("approvals");
-                    let local_approval_dir = approval_dir.join("local-call");
+                    let local_approval_dir = approval_dir.join(format!("local-{kind}"));
                     for dir in [&custody_dir, &approval_dir, &local_approval_dir] {
-                        fs::create_dir(dir).unwrap();
+                        if !dir.exists() { fs::create_dir(dir).unwrap(); }
                         #[cfg(unix)] {
                             use std::os::unix::fs::PermissionsExt;
                             fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -357,20 +366,20 @@ async fn cli_inventory_success_trap_and_exact_files_survive_restart() {
                         command.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/confirm-local-call-test-pty.py"));
                         if reject { command.arg("--reject"); }
                         let approval = command.arg(env!("CARGO_BIN_EXE_sunrise-edge-cli"))
-                            .args(["custody", "approve-local-call", "--config"])
+                            .args(["custody", format!("approve-local-{kind}").as_str(), "--config"])
                             .arg(&custody_config)
                             .arg("--unsigned-file").arg(&unsigned_file)
                             .arg("--approvals-dir").arg(&approval_dir)
                             .args(["--expires-in-seconds", "120"])
                             .output().expect("Python3 and its PTY support are required by this owner");
                         assert!(approval.status.success(), "PTY approval: {}", String::from_utf8_lossy(&approval.stderr));
-                        let marker = if reject {"local_call_real_pty_refusal=passed"} else {"local_call_real_pty_approval=passed"};
-                        assert!(String::from_utf8_lossy(&approval.stdout).contains(marker));
+                        let marker = format!("local_{kind}_real_pty_{}=passed", if reject {"refusal"} else {"approval"});
+                        assert!(String::from_utf8_lossy(&approval.stdout).contains(&marker));
                         if reject { assert!(fs::read_dir(&local_approval_dir).unwrap().next().is_none()); }
                     }
                     let protected_file = file(&format!("protected-{nonce}-{boot_index}"));
                     sunrise_edge_cli::run(vec![
-                        OsString::from("custody"), OsString::from("sign-local-call"),
+                        OsString::from("custody"), OsString::from(format!("sign-local-{kind}")),
                         OsString::from("--config"), custody_config.into_os_string(),
                         OsString::from("--unsigned-file"), OsString::from(unsigned_file.clone()),
                         OsString::from("--approvals-dir"), approval_dir.into_os_string(),
@@ -383,7 +392,7 @@ async fn cli_inventory_success_trap_and_exact_files_survive_restart() {
                     assert_eq!(signed.signature.to_vec(), LocalSigner::from_seed([7; 32])
                         .sign_framed(review.signable_frame()).unwrap());
                     invoke(
-                        "submit-signed-call",
+                        &format!("submit-signed-{kind}"),
                         vec![
                             "--signed-file".into(),
                             protected_file,
@@ -401,6 +410,27 @@ async fn cli_inventory_success_trap_and_exact_files_survive_restart() {
                             fs::read(file(&format!("signed-{nonce}-1"))).unwrap(),
                             fs::read(file(&format!("signed-{nonce}-0"))).unwrap()
                         );
+                        if instantiate {
+                            invoke(
+                                "instantiate",
+                                vec![
+                                    "--seed-file".into(), file("seed"),
+                                    "--args".into(), file(argument),
+                                    "--gas-limit".into(), "1000000".into(),
+                                    "--request-id".into(), format!("{:02x}", nonce + 10).repeat(32),
+                                    "--nonce".into(), nonce.to_string(),
+                                    "--code-ref".into(), file("warehouse.ref"),
+                                    "--instance-seed".into(), "03".repeat(32),
+                                    "--result-out".into(), file("direct-instantiate-result"),
+                                    "--submission-out".into(), file("direct-instantiate-signed"),
+                                ],
+                            ).unwrap();
+                            assert_eq!(fs::read(file("direct-instantiate-result")).unwrap(), bytes);
+                            assert_eq!(
+                                fs::read(file("direct-instantiate-signed")).unwrap(),
+                                fs::read(file(&format!("signed-{nonce}-{boot_index}"))).unwrap()
+                            );
+                        }
                     }
                     return decode_local_execution_result(&bytes).unwrap();
                 }
