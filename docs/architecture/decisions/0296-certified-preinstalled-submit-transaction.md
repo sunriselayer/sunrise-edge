@@ -2,7 +2,8 @@
 
 Date: 2026-11-25 (Asia/Singapore)
 
-Status: Proposed. Pure candidate validation is implemented; certification,
+Status: Proposed. Pure candidate validation and an internal, no-authority
+signed-profile/shared-slot staging guard are implemented; certification,
 application, reconstruction and activation are not.
 
 ## Scope and existing owner
@@ -27,6 +28,13 @@ request ID. The lane partitions request IDs; it does not prove object ownership.
 Ownership remains a store-backed prepare check. The pure check performs no
 store I/O, vote or mutation.
 Current `require_historical_direct_writer` refusal remains unchanged.
+The internal causal staging branch checks the locally pinned signed-genesis
+profile against the installed binding and refuses an occupied or tombstoned
+prepared slot shared with paid FastVote. It does not publish or commit, and it
+does not authorize genesis-installed object sidecars or missing logical
+provenance. Its owning test confirms that a failed candidate leaves the object,
+nonce and receipt unchanged. A successful full object/effect stage remains
+part of the certified prepare implementation below.
 
 ## Certified input, conflict and effect boundary
 

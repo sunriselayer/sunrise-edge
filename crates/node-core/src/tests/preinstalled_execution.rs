@@ -1006,6 +1006,196 @@ fn preinstalled_wasm_owned_write_commits_object_nonce_and_receipt() {
     assert_eq!(nonce_record.next_nonce, 1);
 }
 
+#[test]
+fn causal_preinstalled_stage_fences_profile_and_shared_prepared_slot_without_committing() {
+    let store: MemoryDurableStateStore =
+        MemoryDurableStateStore::new(WriterFenceGeneration::new(1).unwrap());
+    store.set_time(100);
+    let context: DurableOperationContext = durable_context();
+    let object_domain: AtomicityDomainId = domain(1);
+    let hash_resolver: HashSuiteResolver = resolver("genesis-test");
+    let manifest: crate::genesis::GenesisManifest =
+        crate::genesis::tests::causal_bonded_manifest();
+    crate::genesis::install_genesis(
+        &store,
+        &context,
+        object_domain,
+        &hash_resolver,
+        &manifest,
+        9,
+    )
+    .unwrap();
+    let genesis_bytes = crate::genesis::encode_genesis_manifest(&manifest).unwrap();
+    let genesis_digest = crate::genesis::genesis_manifest_commitment(&hash_resolver, &manifest)
+        .unwrap();
+    let verified = crate::genesis::VerifiedGenesisRoot::verify_bytes(
+        &hash_resolver,
+        &genesis_bytes,
+        genesis_digest.bytes(),
+        manifest.context(),
+    )
+    .unwrap()
+    .admission_profile()
+    .clone();
+    commit_fastpath_epoch_record(
+        &store,
+        &context,
+        object_domain,
+        "genesis-test",
+        Epoch::new(7),
+    );
+
+    // The missing object keeps this test at the admission seam: successful
+    // profile/slot checks must still confer no execution or commit authority.
+    let signing_key: SigningKey = dev_signing_key(0xDA);
+    let sender: Address = dev_sender_address(&signing_key);
+    let write_id: ObjectId = ObjectId::new([0x95; 32]);
+    let write_ref: ObjectRef = sample_object_ref(0x95);
+    let module_id = ModuleId::new([0x70; 32]);
+    let (registry, catalog, module_ref) = preinstalled_module_fixture(
+        &hash_resolver,
+        module_id,
+        1,
+        preinstalled_write_wasm_bytes(),
+        64,
+        Epoch::new(0),
+        system_modules::ModuleStatus::Active,
+    );
+    let mut protocol_config: ProtocolConfig = active_protocol_config(1);
+    protocol_config.transaction_auth_profile =
+        Some(TransactionAuthProfile::ed25519_canonical_prime_order_address_is_public_key());
+    protocol_config.system_modules = registry;
+    let submission: AuthenticatedSubmitTransaction =
+        authenticated_profile_2_submission_from_transaction(
+            "genesis-test",
+            request(0x70),
+            &signing_key,
+            Epoch::new(7),
+            preinstalled_transaction(
+                sender,
+                ChainId::new("genesis-test").unwrap(),
+                Epoch::new(7),
+                0,
+                manifest_with(vec![AccessEntry {
+                    object_ref: write_ref,
+                    mode: AccessMode::Write,
+                }]),
+                module_ref,
+                vec![1, 2],
+            ),
+            &config("genesis-test"),
+            &protocol_config,
+        );
+    let blob_store: MemoryBlobStore = MemoryBlobStore::default();
+    assert!(matches!(
+        stage_preinstalled_submit_invocation(
+            &blob_store,
+            &store,
+            &context,
+            &hash_resolver,
+            &catalog,
+            &WasmExecutionEngine,
+            submission.clone(),
+            9,
+            None,
+            StagedAdmission::CausalPrepare(&verified),
+        ),
+        Err(NodeCoreError::ObjectNotFound { object_id }) if object_id == write_id
+    ));
+    assert_eq!(
+        store.get_object_head(&context, object_domain, write_id).unwrap(),
+        DurableObjectHead::Absent
+    );
+    assert!(store
+        .get_versioned_durable(
+            &context,
+            object_domain,
+            &sender_nonce_key_for("genesis-test", *sender.as_bytes(), Epoch::new(7)),
+        )
+        .unwrap()
+        .value()
+        .is_none());
+    assert!(matches!(
+        query_request_receipt(&store, &context, object_domain, request(0x70)).unwrap(),
+        ReceiptQueryResult::Absent { .. }
+    ));
+
+    let prepared_key = local_instance_state::fastpath_prepared_record_key(
+        &ChainId::new("genesis-test").unwrap(),
+        request(0x70).as_bytes(),
+    )
+    .unwrap();
+    let occupancy = AtomicStateTransaction::new(
+        object_domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(prepared_key.clone(), StateRevision::INITIAL).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(prepared_key.clone(), StateMutation::Put(vec![0xA5])).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context, occupancy),
+        DurableCommitOutcome::Committed
+    );
+    assert!(matches!(
+        stage_preinstalled_submit_invocation(
+            &blob_store,
+            &store,
+            &context,
+            &hash_resolver,
+            &catalog,
+            &WasmExecutionEngine,
+            submission.clone(),
+            9,
+            None,
+            StagedAdmission::CausalPrepare(&verified),
+        ),
+        Err(NodeCoreError::PersistenceInvariant(
+            "causal prepared slot already occupied"
+        ))
+    ));
+    let occupied = store
+        .get_versioned_durable(&context, object_domain, &prepared_key)
+        .unwrap();
+    let tombstone = AtomicStateTransaction::new(
+        object_domain,
+        AtomicStateReadSet::new(vec![
+            StateReadAssertion::new(prepared_key.clone(), occupied.revision()).unwrap(),
+        ])
+        .unwrap(),
+        AtomicStateMutationSet::new(vec![
+            StateMutationEntry::new(prepared_key, StateMutation::Delete).unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.commit_durable(&context, tombstone),
+        DurableCommitOutcome::Committed
+    );
+    assert!(matches!(
+        stage_preinstalled_submit_invocation(
+            &blob_store,
+            &store,
+            &context,
+            &hash_resolver,
+            &catalog,
+            &WasmExecutionEngine,
+            submission,
+            9,
+            None,
+            StagedAdmission::CausalPrepare(&verified),
+        ),
+        Err(NodeCoreError::PersistenceInvariant(
+            "causal prepared slot already occupied"
+        ))
+    ));
+}
+
 /// DR-0131 criterion 4: the preinstalled-WASM `SubmitTransaction` entrypoint
 /// rejects a request bound to a non-current epoch at the shared durable
 /// boundary, before durable module/object work or mutation. The precise

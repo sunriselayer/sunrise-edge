@@ -5077,9 +5077,7 @@ where
                 event.request_id().as_bytes(),
             )?;
             let prepared_row = store.get_versioned_durable(context, domain, &prepared_key)?;
-            if prepared_row.value().is_some()
-                || prepared_row.revision() != StateRevision::INITIAL
-            {
+            if prepared_row.value().is_some() || prepared_row.revision() != StateRevision::INITIAL {
                 return Err(NodeCoreError::PersistenceInvariant(
                     "causal prepared slot already occupied",
                 ));
