@@ -183,8 +183,8 @@ impl fmt::Display for CliError {
                 "no subcommand supplied; expected one of: address, context, object, receipt, next-nonce, transfer, split, merge, mint, burn, contract, economics, custody",
             ),
             Self::UnknownCommand(command) => write!(f, "unknown subcommand: {command:?}"),
-            Self::MissingContractAction => f.write_str("contract requires an action: validate, publish, query, instantiate, call, prepare-call, submit-signed-call, query-instance, paid-publish, paid-instantiate, paid-call, fastvote-replay, fastvote-catch-up, fastvote-frontier-advance, fastvote-frontier-export, fastvote-drain-local-ready, or fastvote-drain-member"),
-            Self::UnknownContractAction(action) => write!(f, "unknown contract action: {action:?}; expected validate, publish, query, instantiate, call, prepare-call, submit-signed-call, query-instance, paid-publish, paid-instantiate, paid-call, fastvote-replay, fastvote-catch-up, fastvote-frontier-advance, fastvote-frontier-export, fastvote-drain-local-ready, or fastvote-drain-member"),
+            Self::MissingContractAction => f.write_str("contract requires an action: validate, publish, query, instantiate, call, prepare-call, submit-signed-call, prepare-instantiate, submit-signed-instantiate, query-instance, paid-publish, paid-instantiate, paid-call, fastvote-replay, fastvote-catch-up, fastvote-frontier-advance, fastvote-frontier-export, fastvote-drain-local-ready, or fastvote-drain-member"),
+            Self::UnknownContractAction(action) => write!(f, "unknown contract action: {action:?}; expected validate, publish, query, instantiate, call, prepare-call, submit-signed-call, prepare-instantiate, submit-signed-instantiate, query-instance, paid-publish, paid-instantiate, paid-call, fastvote-replay, fastvote-catch-up, fastvote-frontier-advance, fastvote-frontier-export, fastvote-drain-local-ready, or fastvote-drain-member"),
             Self::WasmFileRead { path, source } => write!(f, "cannot read WASM file {path:?}: {source}"),
             Self::ContractEntrypointListTooLarge => f.write_str("--entrypoints exceeds the bounded entrypoint list size"),
             Self::ContractWasm(error) => write!(f, "contract WASM validation failed: {error}"),
@@ -262,10 +262,10 @@ impl fmt::Display for CliError {
                 "a Ledger signer was selected, but this binary was built without the usb-hid feature",
             ),
             Self::MissingCustodyAction => f.write_str(
-                "custody requires an action: keygen, approve, approve-local-call, sign-local-call, or serve",
+                "custody requires an action: keygen, approve, approve-local-call, sign-local-call, approve-local-instantiate, sign-local-instantiate, or serve",
             ),
             Self::UnknownCustodyAction(action) => {
-                write!(f, "unknown custody action: {action:?}; expected keygen, approve, approve-local-call, sign-local-call, or serve")
+                write!(f, "unknown custody action: {action:?}; expected keygen, approve, approve-local-call, sign-local-call, approve-local-instantiate, sign-local-instantiate, or serve")
             }
             Self::Custody(error) => write!(f, "{error}"),
             Self::PartialCustodySignerConfiguration { missing } => write!(

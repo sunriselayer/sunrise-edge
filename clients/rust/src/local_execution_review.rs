@@ -245,6 +245,28 @@ impl LocalExecutionReview {
         resolver: &HashSuiteResolver,
         policy: &LocalExecutionPolicy,
     ) -> Result<Self, LocalExecutionReviewError> {
+        Self::from_saved(bytes, resolver, policy, LocalExecutionMode::Call)
+    }
+
+    /// Saved-intent counterpart for a canonical local/general `Instantiate`.
+    /// The caller selects the mode, never the file, so a saved Call cannot be
+    /// approved or signed as an Instantiate or the reverse. The sender must be
+    /// the new instance's creator at revision 1 with an empty access manifest,
+    /// as preparation produces.
+    pub fn from_saved_instantiate(
+        bytes: &[u8],
+        resolver: &HashSuiteResolver,
+        policy: &LocalExecutionPolicy,
+    ) -> Result<Self, LocalExecutionReviewError> {
+        Self::from_saved(bytes, resolver, policy, LocalExecutionMode::Instantiate)
+    }
+
+    fn from_saved(
+        bytes: &[u8],
+        resolver: &HashSuiteResolver,
+        policy: &LocalExecutionPolicy,
+        mode: LocalExecutionMode,
+    ) -> Result<Self, LocalExecutionReviewError> {
         if bytes.len() > MAX_LOCAL_EXECUTION_REVIEW_BYTES {
             return Err(LocalExecutionReviewError::Limit);
         }
@@ -252,10 +274,17 @@ impl LocalExecutionReview {
         if encode_local_execution_intent(&intent)? != bytes {
             return Err(LocalExecutionReviewError::IntentMismatch);
         }
-        if intent.mode != LocalExecutionMode::Call
+        if intent.mode != mode
             || intent.call.context != *policy.context()
             || intent.policy_digest != policy.digest(resolver)?
             || intent.call.gas_limit > policy.max_gas()
+        {
+            return Err(LocalExecutionReviewError::BindingMismatch);
+        }
+        if mode == LocalExecutionMode::Instantiate
+            && (intent.call.instance.creator != intent.call.sender
+                || intent.call.instance.revision != 1
+                || !intent.call.access.entries.is_empty())
         {
             return Err(LocalExecutionReviewError::BindingMismatch);
         }

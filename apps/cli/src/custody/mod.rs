@@ -36,6 +36,8 @@
 //! - `custody approve-local-call`/`sign-local-call` consume a saved canonical
 //!   local/general Call under this process's pinned config and a dedicated
 //!   approval directory, with exact signed-frame approval and no network.
+//!   `approve-local-instantiate`/`sign-local-instantiate` do the same for a
+//!   saved Instantiate with a separate `local-instantiate` approval directory.
 //! - `custody approve-fee-claim`/`serve-fee-claim` use the same owner with
 //!   the DR-0257 protected ZeroShare fee-claim policy, under one closed
 //!   kind-7 decoder; see `fee_claim_zero`. There is no `sign-fee-claim`
@@ -178,6 +180,8 @@ where
         "keygen" => keygen::run(args),
         "approve-local-call" => local_call_commands::approve(args),
         "sign-local-call" => local_call_commands::sign(args),
+        "approve-local-instantiate" => local_call_commands::approve_instantiate(args),
+        "sign-local-instantiate" => local_call_commands::sign_instantiate(args),
         "prepare-transfer" => asset_commands::prepare(args),
         "approve" => approve::run(args),
         "revoke" => revoke::run(args),

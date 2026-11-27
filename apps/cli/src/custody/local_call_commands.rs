@@ -33,6 +33,41 @@ fn invalid(message: &'static str) -> CliError {
     ))
 }
 
+/// The command, never the saved file, selects the mode. Each mode has its own
+/// approval directory, confirmation text and output markers.
+#[derive(Clone, Copy)]
+enum Kind {
+    Call,
+    Instantiate,
+}
+
+impl Kind {
+    fn dir(self) -> &'static str {
+        match self {
+            Self::Call => "local-call",
+            Self::Instantiate => "local-instantiate",
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Call => "APPROVE-LOCAL-CALL",
+            Self::Instantiate => "APPROVE-LOCAL-INSTANTIATE",
+        }
+    }
+    fn approved(self) -> &'static str {
+        match self {
+            Self::Call => "approved_local_call",
+            Self::Instantiate => "approved_local_instantiate",
+        }
+    }
+    fn signed(self) -> &'static str {
+        match self {
+            Self::Call => "signed_local_call",
+            Self::Instantiate => "signed_local_instantiate",
+        }
+    }
+}
+
 fn specs(signing: bool) -> Vec<crate::args::FlagSpec> {
     let mut specs = vec![
         switch("--general-calls"),
@@ -71,6 +106,7 @@ fn policy(
 }
 
 fn read_review(
+    kind: Kind,
     parsed: &ParsedArgs,
     config: &CustodyConfig,
 ) -> Result<
@@ -89,21 +125,27 @@ fn read_review(
         0o700,
         MAX_LOCAL_EXECUTION_INTENT_BYTES,
     )?;
-    let review =
-        LocalExecutionReview::from_saved_call(&bytes, &resolver, &policy).map_err(failure)?;
+    let review = match kind {
+        Kind::Call => LocalExecutionReview::from_saved_call(&bytes, &resolver, &policy),
+        Kind::Instantiate => {
+            LocalExecutionReview::from_saved_instantiate(&bytes, &resolver, &policy)
+        }
+    }
+    .map_err(failure)?;
     let intent = decode_local_execution_intent(review.intent_bytes()).map_err(failure)?;
     if intent.call.sender != *config.publisher().as_bytes() {
-        return Err(invalid(
-            "saved local Call sender differs from custody publisher",
-        ));
+        return Err(invalid(match kind {
+            Kind::Call => "saved local Call sender differs from custody publisher",
+            Kind::Instantiate => "saved local Instantiate sender differs from custody publisher",
+        }));
     }
     Ok((review, intent, policy, resolver))
 }
 
-fn approval_dir(parsed: &ParsedArgs) -> Result<PathBuf, CliError> {
+fn approval_dir(kind: Kind, parsed: &ParsedArgs) -> Result<PathBuf, CliError> {
     let parent = Path::new(parsed.require("--approvals-dir")?);
     fsperm::require_private_dir(parent, 0o700)?;
-    let dir = parent.join("local-call");
+    let dir = parent.join(kind.dir());
     fsperm::require_private_dir(&dir, 0o700)?;
     Ok(dir)
 }
@@ -129,9 +171,16 @@ fn require_custody_uid(config: &CustodyConfig) -> Result<(), CliError> {
     Ok(())
 }
 
-fn confirmation(config: &CustodyConfig, id: &RequestId, nonce: u64, not_after: u64) -> String {
+fn confirmation(
+    kind: Kind,
+    config: &CustodyConfig,
+    id: &RequestId,
+    nonce: u64,
+    not_after: u64,
+) -> String {
     format!(
-        "APPROVE-LOCAL-CALL sender={} request_id={} nonce={} not_after={not_after}",
+        "{} sender={} request_id={} nonce={} not_after={not_after}",
+        kind.label(),
         config.publisher(),
         id,
         nonce,
@@ -143,11 +192,11 @@ fn save_approval(
     config: &CustodyConfig,
     review: &LocalExecutionReview,
     id: &RequestId,
-    nonce: u64,
     not_after: u64,
+    expected_confirmation: &str,
     typed: &str,
 ) -> Result<(), CliError> {
-    if typed != confirmation(config, id, nonce, not_after) {
+    if typed != expected_confirmation {
         return Err(CustodyError::ApprovalConfirmationMismatch.into());
     }
     approvals::write_approval(
@@ -163,11 +212,29 @@ fn save_approval(
 }
 
 pub(super) fn approve<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    approve_kind(Kind::Call, args)
+}
+
+pub(super) fn approve_instantiate<I: IntoIterator<Item = OsString>>(
+    args: I,
+) -> Result<(), CliError> {
+    approve_kind(Kind::Instantiate, args)
+}
+
+pub(super) fn sign<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    sign_kind(Kind::Call, args)
+}
+
+pub(super) fn sign_instantiate<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    sign_kind(Kind::Instantiate, args)
+}
+
+fn approve_kind<I: IntoIterator<Item = OsString>>(kind: Kind, args: I) -> Result<(), CliError> {
     let parsed = parse_flags(args, &specs(false))?;
     let config = CustodyConfig::load(Path::new(parsed.require("--config")?))?;
     require_custody_uid(&config)?;
-    let (review, intent, _, _) = read_review(&parsed, &config)?;
-    let dir = approval_dir(&parsed)?;
+    let (review, intent, _, _) = read_review(kind, &parsed, &config)?;
+    let dir = approval_dir(kind, &parsed)?;
     let id = RequestId::new(intent.call.request_id)?;
     if revoke::is_revoked(&dir, &id)? {
         return Err(CustodyError::ApprovalRevoked.into());
@@ -183,7 +250,7 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
         .checked_add(expires)
         .ok_or(CustodyError::ExpiryOverflow)?;
     print!("{}", review.display());
-    let confirmation = confirmation(&config, &id, intent.call.nonce, not_after);
+    let confirmation = confirmation(kind, &config, &id, intent.call.nonce, not_after);
     println!("Type exactly to approve:\n{confirmation}");
     let typed = super::approve::read_bounded_confirmation_line(1024)?;
     save_approval(
@@ -191,20 +258,23 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), C
         &config,
         &review,
         &id,
-        intent.call.nonce,
         not_after,
+        &confirmation,
         &typed,
     )?;
-    println!("approved_local_call=true\nrequest_id={id}\nnot_after={not_after}");
+    println!(
+        "{}=true\nrequest_id={id}\nnot_after={not_after}",
+        kind.approved()
+    );
     Ok(())
 }
 
-pub(super) fn sign<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+fn sign_kind<I: IntoIterator<Item = OsString>>(kind: Kind, args: I) -> Result<(), CliError> {
     let parsed = parse_flags(args, &specs(true))?;
     let config = CustodyConfig::load(Path::new(parsed.require("--config")?))?;
     require_custody_uid(&config)?;
-    let (review, intent, policy, resolver) = read_review(&parsed, &config)?;
-    let dir = approval_dir(&parsed)?;
+    let (review, intent, policy, resolver) = read_review(kind, &parsed, &config)?;
+    let dir = approval_dir(kind, &parsed)?;
     let id = RequestId::new(intent.call.request_id)?;
     if revoke::is_revoked(&dir, &id)? {
         return Err(CustodyError::ApprovalRevoked.into());
@@ -227,7 +297,12 @@ pub(super) fn sign<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliE
         .sign_frame(review.signable_frame())
         .map_err(failure)?
         .try_into()
-        .map_err(|_| invalid("local Call signature length"))?;
+        .map_err(|_| {
+            invalid(match kind {
+                Kind::Call => "local Call signature length",
+                Kind::Instantiate => "local Instantiate signature length",
+            })
+        })?;
     let signed = SignedLocalExecutionIntent { intent, signature };
     let bytes = encode_signed_local_execution(&signed).map_err(failure)?;
     authenticate_local_execution(&resolver, &policy, &bytes).map_err(failure)?;
@@ -236,7 +311,8 @@ pub(super) fn sign<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliE
     }
     super::write_review_preimage(Path::new(parsed.require("--signed-out")?), &bytes)?;
     println!(
-        "signed_local_call=true\nrequest_id={id}\nsigned_bytes={}",
+        "{}=true\nrequest_id={id}\nsigned_bytes={}",
+        kind.signed(),
         bytes.len()
     );
     Ok(())
@@ -262,6 +338,20 @@ mod tests {
 
     #[test]
     fn approved_saved_call_signs_exact_frame_and_refuses_changed_or_revoked_content() {
+        saved_flow(Kind::Call);
+    }
+
+    #[test]
+    fn approved_saved_instantiate_signs_exact_frame_with_separate_approval_dir() {
+        saved_flow(Kind::Instantiate);
+    }
+
+    fn saved_flow(kind: Kind) {
+        let sign = |args: Vec<OsString>| sign_kind(kind, args);
+        let other = match kind {
+            Kind::Call => Kind::Instantiate,
+            Kind::Instantiate => Kind::Call,
+        };
         let root = TempDir::new(0o700);
         let signer = LocalSigner::from_seed([7; 32]);
         let expected = ExpectedProtocolContext::new(
@@ -300,11 +390,16 @@ mod tests {
         );
         let approvals = root.0.join("approvals");
         std::fs::create_dir(&approvals).unwrap();
-        std::fs::create_dir(approvals.join("local-call")).unwrap();
+        std::fs::create_dir(approvals.join(kind.dir())).unwrap();
+        std::fs::create_dir(approvals.join(other.dir())).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for path in [&approvals, &approvals.join("local-call")] {
+            for path in [
+                &approvals,
+                &approvals.join(kind.dir()),
+                &approvals.join(other.dir()),
+            ] {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
             }
         }
@@ -323,7 +418,10 @@ mod tests {
         .unwrap();
         let policy = LocalExecutionPolicy::new(context.clone());
         let intent = LocalExecutionIntent {
-            mode: LocalExecutionMode::Call,
+            mode: match kind {
+                Kind::Call => LocalExecutionMode::Call,
+                Kind::Instantiate => LocalExecutionMode::Instantiate,
+            },
             policy_digest: policy.digest(&resolver).unwrap(),
             call: CallIntent {
                 context,
@@ -347,15 +445,17 @@ mod tests {
         };
         let unsigned = root.0.join("unsigned");
         file(&unsigned, &encode_local_execution_intent(&intent).unwrap());
-        let review = LocalExecutionReview::from_saved_call(
-            &std::fs::read(&unsigned).unwrap(),
-            &resolver,
-            &policy,
-        )
+        let saved = std::fs::read(&unsigned).unwrap();
+        let review = match kind {
+            Kind::Call => LocalExecutionReview::from_saved_call(&saved, &resolver, &policy),
+            Kind::Instantiate => {
+                LocalExecutionReview::from_saved_instantiate(&saved, &resolver, &policy)
+            }
+        }
         .unwrap();
         let loaded_config = CustodyConfig::load(&config).unwrap();
         let id = RequestId::new([3; 32]).unwrap();
-        let approval_path = approvals.join("local-call");
+        let approval_path = approvals.join(kind.dir());
         let flags = |out: &Path| {
             vec![
                 OsString::from("--config"),
@@ -376,8 +476,8 @@ mod tests {
                 &loaded_config,
                 &review,
                 &id,
-                9,
                 u64::MAX,
+                &confirmation(kind, &loaded_config, &id, 9, u64::MAX),
                 "wrong",
             )
             .is_err()
@@ -396,9 +496,9 @@ mod tests {
             &loaded_config,
             &review,
             &id,
-            9,
             u64::MAX,
-            &confirmation(&loaded_config, &id, 9, u64::MAX),
+            &confirmation(kind, &loaded_config, &id, 9, u64::MAX),
+            &confirmation(kind, &loaded_config, &id, 9, u64::MAX),
         )
         .unwrap();
         let signed = root.0.join("signed");
@@ -435,14 +535,29 @@ mod tests {
         std::fs::write(&unsigned, encode_local_execution_intent(&changed).unwrap()).unwrap();
         assert!(sign(flags(&root.0.join("changed-out"))).is_err());
         changed.call.sender = [8; 32];
-        std::fs::write(&unsigned, encode_local_execution_intent(&changed).unwrap()).unwrap();
-        assert!(sign(flags(&root.0.join("sender-out"))).is_err());
+        match kind {
+            Kind::Call => {
+                std::fs::write(&unsigned, encode_local_execution_intent(&changed).unwrap())
+                    .unwrap();
+                assert!(sign(flags(&root.0.join("sender-out"))).is_err());
+            }
+            Kind::Instantiate => assert!(encode_local_execution_intent(&changed).is_err()),
+        }
         std::fs::write(&unsigned, encode_local_execution_intent(&intent).unwrap()).unwrap();
-        revoke::revoke(
-            &approvals.join("local-call"),
-            &RequestId::new([3; 32]).unwrap(),
-        )
-        .unwrap();
+        // The other mode refuses this file, and neither mode's approval or
+        // revocation directory is shared with the other.
+        assert!(sign_kind(other, flags(&root.0.join("cross-mode-out"))).is_err());
+        assert!(
+            approvals::read_approval(&approvals.join(other.dir()), &id)
+                .unwrap()
+                .is_none()
+        );
+        assert_ne!(
+            confirmation(kind, &loaded_config, &id, 9, 1),
+            confirmation(other, &loaded_config, &id, 9, 1)
+        );
+        revoke::revoke(&approvals.join(kind.dir()), &id).unwrap();
         assert!(sign(flags(&root.0.join("revoked-out"))).is_err());
+        assert!(!revoke::is_revoked(&approvals.join(other.dir()), &id).unwrap());
     }
 }

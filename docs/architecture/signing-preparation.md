@@ -99,10 +99,34 @@ context and local/general policy, authenticates those signed bytes, and
 submits them with the existing replay-safe result/submission outputs. The
 original `contract call` immediate development-signer path is unchanged.
 
+### Saved local/general Instantiate protection
+
+The same flow exists for Instantiate with distinct commands and state:
+`contract prepare-instantiate` (same authenticated scope resolution as
+`contract instantiate`, requiring `--sender` and `--unsigned-out`, no signer),
+`custody approve-local-instantiate`, `custody sign-local-instantiate` and
+`contract submit-signed-instantiate`. The command, never the file, selects the
+mode: `LocalExecutionReview::from_saved_instantiate` rejects a saved Call and
+`from_saved_call` rejects a saved Instantiate. The saved Instantiate must also
+name the sender as instance creator at revision 1 with an empty access
+manifest, as preparation produces; `submit-signed-instantiate` rechecks this
+before network use. Approvals and permanent revocation tombstones live in a
+separate private `local-instantiate` child of `--approvals-dir`, and the typed
+confirmation begins `APPROVE-LOCAL-INSTANTIATE`, so a Call approval or
+revocation never applies to an Instantiate or the reverse. `custody revoke`
+must receive that child path. Output markers are
+`approved_local_instantiate`, `signed_local_instantiate` and
+`unsigned_local_instantiate_exported`. Call behavior and wire types are
+unchanged; the offline review likewise does not replay scope validation. The
+existing local and general devnet
+owners exercise a real PTY refusal and approval, custody signing, native
+SQLite submission, and exact replay after restart for selected Instantiate
+operations.
+
 The offline saved-file review does not replay publication-closure/scope
 validation; its display says so. The preparation command performs that
 validation before export. No semantic meaning is asserted for arbitrary
-contract arguments. Instantiate, Publish, a real separate-UID lifecycle,
+contract arguments. Publish, a real separate-UID lifecycle,
 enrolled protected keys and M2 parent qualification remain separate work.
 The local and general devnet E2E owners each exercise one selected saved Call
 through real PTY approval, custody command signing and native SQLite
