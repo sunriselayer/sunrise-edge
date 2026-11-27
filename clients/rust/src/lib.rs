@@ -68,6 +68,7 @@ pub mod fee_claim_review;
 pub mod immutable_archive;
 pub mod key;
 pub mod local_execution_client;
+pub mod local_execution_review;
 mod local_genesis;
 pub mod ordered_economics_client;
 pub mod ordered_history_archive;
@@ -128,6 +129,7 @@ pub use key::LocalSigner;
 pub use local_execution_client::{
     PreparedLocalExecution, build_signed_general_execution, build_signed_local_execution,
 };
+pub use local_execution_review::{LocalExecutionReview, LocalExecutionReviewError};
 pub use local_genesis::{GenesisTrustError, load_verified_genesis_root};
 pub use node_core::genesis::{GenesisCommitteeError, GenesisRootError, VerifiedGenesisRoot};
 // Offline artifact consumers use the same certificate verifier as the network
