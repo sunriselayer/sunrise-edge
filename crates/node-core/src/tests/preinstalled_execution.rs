@@ -1014,8 +1014,7 @@ fn causal_preinstalled_stage_fences_profile_and_shared_prepared_slot_without_com
     let context: DurableOperationContext = durable_context();
     let object_domain: AtomicityDomainId = domain(1);
     let hash_resolver: HashSuiteResolver = resolver("genesis-test");
-    let manifest: crate::genesis::GenesisManifest =
-        crate::genesis::tests::causal_bonded_manifest();
+    let manifest: crate::genesis::GenesisManifest = crate::genesis::tests::causal_bonded_manifest();
     crate::genesis::install_genesis(
         &store,
         &context,
@@ -1026,8 +1025,8 @@ fn causal_preinstalled_stage_fences_profile_and_shared_prepared_slot_without_com
     )
     .unwrap();
     let genesis_bytes = crate::genesis::encode_genesis_manifest(&manifest).unwrap();
-    let genesis_digest = crate::genesis::genesis_manifest_commitment(&hash_resolver, &manifest)
-        .unwrap();
+    let genesis_digest =
+        crate::genesis::genesis_manifest_commitment(&hash_resolver, &manifest).unwrap();
     let verified = crate::genesis::VerifiedGenesisRoot::verify_bytes(
         &hash_resolver,
         &genesis_bytes,
@@ -1103,18 +1102,22 @@ fn causal_preinstalled_stage_fences_profile_and_shared_prepared_slot_without_com
         Err(NodeCoreError::ObjectNotFound { object_id }) if object_id == write_id
     ));
     assert_eq!(
-        store.get_object_head(&context, object_domain, write_id).unwrap(),
+        store
+            .get_object_head(&context, object_domain, write_id)
+            .unwrap(),
         DurableObjectHead::Absent
     );
-    assert!(store
-        .get_versioned_durable(
-            &context,
-            object_domain,
-            &sender_nonce_key_for("genesis-test", *sender.as_bytes(), Epoch::new(7)),
-        )
-        .unwrap()
-        .value()
-        .is_none());
+    assert!(
+        store
+            .get_versioned_durable(
+                &context,
+                object_domain,
+                &sender_nonce_key_for("genesis-test", *sender.as_bytes(), Epoch::new(7)),
+            )
+            .unwrap()
+            .value()
+            .is_none()
+    );
     assert!(matches!(
         query_request_receipt(&store, &context, object_domain, request(0x70)).unwrap(),
         ReceiptQueryResult::Absent { .. }
