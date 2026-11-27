@@ -1223,6 +1223,7 @@ fn authenticated_owned_write_large_update_publishes_and_references_blob() {
         Some(dispatch),
         Some(2),
         None,
+        StagedAdmission::HistoricalDirect,
     )
     .unwrap();
     match staged {
