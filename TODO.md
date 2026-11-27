@@ -9,6 +9,7 @@
 - [x] 公開ベータの目標を実資産・全機能に訂正した（2026-11-25）。既存の各host/adapterは異なる経路を提供し、一つのcertified relayだけでは全機能を公開できないことを確認した。これは公開資格の達成ではない。
 - [ ] 全ての実装済み機能・入口・host・backendと未実装/未検証の機能を対応付け、提供を完了する。受け付ける取引、FastVote管理・drain、generic paid、direct/ordered、handoff/successor、参照などを勝手に除外しない。
   - [x] 現行sourceの実装済み主要経路とhostを[構成一覧](docs/architecture/compositions-and-capabilities.md#concrete-composition-owners)・実sourceで照合した。event/directはdevnet実行のみ、certified/orderedはoriginal host、successor/handoffはsuccessor host、Cloudflare内蔵validatorは一部経路という境界を確認。全機能を公開するhost/入口と未実装機能の完了は残る。
+  - [x] causal preinstalled `SubmitTransaction`の最初の候補判定を実装した。profile-2署名が外側のrequest IDを覆うこと、signed genesisのchain/version・Owned lane・空でないobject manifestを確認する純粋な判定に限定する。証明書、状態更新、公開hostとhandoff対応は未実装であり、このチェックを公開資格に転用しない。
 - [ ] 全対象操作の保護鍵・正確な内容確認・実承認者・復旧/取消と、実chain/genesis・validator/運営担当・asset/economics・artifactを固定して通す。M2/D04/D06/M6の結果を共用する。
 - [ ] 全公開入口を実配置で構成し、TLS、upstream認証、要求量・同時実行の上限、停止手段を確認する。到達する全経路を独立にsecurity reviewし、非公開指摘を修正・再確認する。D02/M1と結果を共用する。
 - [ ] 使用する全store/hostで実host/media/fsync、停止・同じ状態からの再開、exact replay、別hostのbackup復旧・writer failover/fenceを確認する。資産状態を巻き戻さない。M3/D07と結果を共用する。
