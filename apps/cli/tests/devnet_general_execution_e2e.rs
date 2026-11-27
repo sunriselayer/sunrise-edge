@@ -4,6 +4,7 @@ mod inventory;
 
 use abi::executable_abi::{ExecutableAbi, encode_executable_abi};
 use abi::{AccessEntry, AccessManifest, encode_access_manifest};
+use crypto::SignatureSigner;
 use execution::call_authorization::{
     AuthorizedObject, CallAuthorization, ExecutionTarget, encode_call_authorizations,
 };
@@ -24,7 +25,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use sunrise_edge_client::{LocalSigner, PackageOrigin};
+use sunrise_edge_client::{LocalExecutionReview, LocalSigner, PackageOrigin};
 use sunrise_edge_devnet::{
     DevnetConfig, boot_local_store, build_devnet_protocol_context, install_paid_contracts,
     verify_or_seed_protocol_context,
@@ -180,6 +181,11 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
         std::process::id()
     ));
     fs::create_dir(&directory).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let _owned_directory: OwnedDirectory = OwnedDirectory(directory.clone());
     let signer: LocalSigner = LocalSigner::from_seed([7; 32]);
     let recipient: LocalSigner = LocalSigner::from_seed([9; 32]);
@@ -494,6 +500,99 @@ async fn cli_general_inventory_scopes_rollback_and_exact_restart_replay() {
                            attempt: usize|
              -> LocalExecutionResult {
                 let (action, mut args) = flags(name, nonce, argument);
+                if name == "fulfil" && nonce == 5 {
+                    assert_eq!(action, "call");
+                    args.drain(0..2); // replace development --seed-file with public sender.
+                    args.extend([
+                        "--sender".into(),
+                        sender.to_string(),
+                        "--unsigned-out".into(),
+                        file(&format!("unsigned-{nonce}-{attempt}")),
+                    ]);
+                    invoke("prepare-call", args).unwrap();
+                    let unsigned = fs::read(file(&format!("unsigned-{nonce}-{attempt}"))).unwrap();
+                    let policy = LocalExecutionPolicy::general(
+                        PublicationContext::new(
+                            resolver.chain_id().clone(),
+                            resolver.protocol_version(),
+                            Epoch::new(9),
+                        )
+                        .unwrap(),
+                    );
+                    let review =
+                        LocalExecutionReview::from_saved_call(&unsigned, &resolver, &policy)
+                            .unwrap();
+                    assert!(review.display().contains("authorization_count=1\n"));
+                    let custody_dir = path.join(format!("custody-{attempt}"));
+                    let approval_dir = custody_dir.join("approvals");
+                    let local_approval_dir = approval_dir.join("local-call");
+                    for dir in [&custody_dir, &approval_dir, &local_approval_dir] {
+                        fs::create_dir(dir).unwrap();
+                        #[cfg(unix)] {
+                            use std::os::unix::fs::PermissionsExt;
+                            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+                        }
+                    }
+                    let custody_config = custody_dir.join("config");
+                    use std::os::unix::fs::MetadataExt;
+                    let operator_uid = fs::metadata(&custody_dir).unwrap().uid().checked_add(1).unwrap();
+                    fs::write(&custody_config, format!(
+                        "chain_id=cli-general-inventory\nprotocol_version={}\nepoch=9\nhash_suite_id=1\ndomain={}\npublisher_public_key={}\noperator_uid={operator_uid}\n",
+                        resolver.protocol_version().get(), domain, sender,
+                    )).unwrap();
+                    #[cfg(unix)] {
+                        use std::os::unix::fs::PermissionsExt;
+                        fs::set_permissions(&custody_config, fs::Permissions::from_mode(0o600)).unwrap();
+                    }
+                    let unsigned_file = file(&format!("unsigned-{nonce}-{attempt}"));
+                    let approval = std::process::Command::new("python3")
+                        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/confirm-local-call-test-pty.py"))
+                        .arg(env!("CARGO_BIN_EXE_sunrise-edge-cli"))
+                        .args(["custody", "approve-local-call", "--general-calls", "--config"])
+                        .arg(&custody_config)
+                        .arg("--unsigned-file").arg(&unsigned_file)
+                        .arg("--approvals-dir").arg(&approval_dir)
+                        .args(["--expires-in-seconds", "120"])
+                        .output().unwrap();
+                    assert!(approval.status.success(), "PTY approval: {}", String::from_utf8_lossy(&approval.stderr));
+                    assert!(String::from_utf8_lossy(&approval.stdout).contains("local_call_real_pty_approval=passed"));
+                    let protected_file = file(&format!("protected-{nonce}-{attempt}"));
+                    sunrise_edge_cli::run(vec![
+                        OsString::from("custody"), OsString::from("sign-local-call"),
+                        OsString::from("--general-calls"),
+                        OsString::from("--config"), custody_config.into_os_string(),
+                        OsString::from("--unsigned-file"), OsString::from(unsigned_file.clone()),
+                        OsString::from("--approvals-dir"), approval_dir.into_os_string(),
+                        OsString::from("--key-file"), path.join("seed").into_os_string(),
+                        OsString::from("--signed-out"), OsString::from(protected_file.clone()),
+                    ]).unwrap();
+                    let protected = fs::read(&protected_file).unwrap();
+                    let signed = decode_signed_local_execution(&protected).unwrap();
+                    assert_eq!(signed.intent, decode_local_execution_intent(&unsigned).unwrap());
+                    assert_eq!(signed.signature.to_vec(), LocalSigner::from_seed([7; 32])
+                        .sign_framed(review.signable_frame()).unwrap());
+                    invoke(
+                        "submit-signed-call",
+                        vec![
+                            "--signed-file".into(),
+                            protected_file,
+                            "--result-out".into(),
+                            file(&format!("result-{nonce}-{attempt}")),
+                            "--submission-out".into(),
+                            file(&format!("signed-{nonce}-{attempt}")),
+                        ],
+                    )
+                    .unwrap();
+                    let bytes = fs::read(file(&format!("result-{nonce}-{attempt}"))).unwrap();
+                    if attempt != 0 {
+                        assert_eq!(bytes, fs::read(file(&format!("result-{nonce}-0"))).unwrap());
+                        assert_eq!(
+                            fs::read(file(&format!("signed-{nonce}-{attempt}"))).unwrap(),
+                            fs::read(file(&format!("signed-{nonce}-0"))).unwrap()
+                        );
+                    }
+                    return decode_local_execution_result(&bytes).unwrap();
+                }
                 args.extend([
                     "--result-out".into(),
                     file(&format!("result-{nonce}-{attempt}")),

@@ -24,7 +24,13 @@ where
     if action == "publish" || action == "query" || action == "preview" {
         return super::publication::run(action, args);
     }
-    if matches!(action, "instantiate" | "call" | "query-instance") {
+    if action == "submit-signed-call" {
+        return super::local_execution::submit_signed_call(args);
+    }
+    if matches!(
+        action,
+        "instantiate" | "call" | "prepare-call" | "query-instance"
+    ) {
         return super::local_execution::run(action, args);
     }
     if matches!(action, "paid-publish" | "paid-instantiate" | "paid-call") {

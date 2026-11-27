@@ -102,6 +102,40 @@ fn prepared_local_and_general_execution_preserve_independent_signed_bytes() {
         assert!(review.display().contains("arguments.opaque_hex="));
         assert!(review.display().contains("scope[0].code_node[0].digest="));
         assert!(review.display().len() <= local_execution_review::MAX_LOCAL_EXECUTION_REVIEW_BYTES);
+        if mode == LocalExecutionMode::Call {
+            let saved =
+                LocalExecutionReview::from_saved_call(review.intent_bytes(), &resolver, &policy)
+                    .unwrap();
+            assert_eq!(saved.intent_bytes(), review.intent_bytes());
+            assert_eq!(saved.signable_frame(), prepared.signable_frame());
+            assert!(
+                saved
+                    .display()
+                    .contains("scope_validation=not_replayed_from_saved_intent\n")
+            );
+            assert!(saved.display().contains("arguments.opaque_hex="));
+            let wrong_policy = if profile == 2 {
+                LocalExecutionPolicy::general(call.context.clone())
+            } else {
+                LocalExecutionPolicy::new(call.context.clone())
+            };
+            assert!(
+                LocalExecutionReview::from_saved_call(
+                    review.intent_bytes(),
+                    &resolver,
+                    &wrong_policy,
+                )
+                .is_err()
+            );
+            let mut trailing = review.intent_bytes().to_vec();
+            trailing.push(0);
+            assert!(LocalExecutionReview::from_saved_call(&trailing, &resolver, &policy).is_err());
+        } else {
+            assert!(
+                LocalExecutionReview::from_saved_call(review.intent_bytes(), &resolver, &policy,)
+                    .is_err()
+            );
+        }
         let external: TestSigner = TestSigner::new([7; 32], Behavior::Valid);
         let actual = prepared.sign_and_finalize_external(&external).unwrap();
         assert_eq!(external.calls(), 1);
@@ -184,6 +218,10 @@ fn general_review_names_each_signed_authorization_and_scope() {
     assert!(display.contains("scope_count=1\n"));
     assert!(!display.contains("\nauthorization.entrypoint="));
     assert_eq!(review.signable_frame(), prepared.signable_frame());
+    let saved =
+        LocalExecutionReview::from_saved_call(review.intent_bytes(), &resolver, &policy).unwrap();
+    assert_eq!(saved.signable_frame(), review.signable_frame());
+    assert!(saved.display().contains("authorization_count=1\n"));
 }
 
 #[test]

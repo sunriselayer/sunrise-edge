@@ -69,6 +69,8 @@ pub enum CustodyError {
 
     /// An approval record was structurally malformed.
     ApprovalMalformed,
+    /// No approval exists for the requested operation and request ID.
+    ApprovalMissing,
     /// The closed positive Split content or genuine historical scope refused.
     PositiveSplitRejected,
     /// The request ID has a durable administrator-owned revocation record.
@@ -116,9 +118,9 @@ pub enum CustodyError {
     /// A key file's contents were not exactly 64 hex digits (plus an
     /// optional trailing newline).
     KeyFileMalformed,
-    /// A command other than publication selected `SignerSelection::Custody`.
-    /// Custody signs publication submissions only; every other family is
-    /// refused here, before any file, network, or device I/O.
+    /// A command other than publication selected the generic
+    /// `SignerSelection::Custody`. Explicit operation-specific custody
+    /// commands are separate; generic selection is refused before I/O.
     PublicationOnly { command: &'static str },
     /// A directory or file required to be owned by this process's own
     /// current effective UID was owned by a different UID.
@@ -223,6 +225,7 @@ impl fmt::Display for CustodyError {
             }
             Self::Wire(error) => write!(f, "custody wire codec rejected a frame: {error}"),
             Self::ApprovalMalformed => f.write_str("custody approval record is malformed"),
+            Self::ApprovalMissing => f.write_str("custody approval record is missing"),
             Self::PositiveSplitRejected => f.write_str("custody positive Split content or historical scope refused"),
             Self::ApprovalRevoked => f.write_str("custody approval request ID is revoked"),
             Self::RevocationMalformed => f.write_str("custody revocation record is malformed"),

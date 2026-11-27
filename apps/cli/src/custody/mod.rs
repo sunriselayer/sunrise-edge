@@ -33,6 +33,9 @@
 //! - `custody serve-fee-split` uses DR-0269's closed kind-6 Leg/Claim
 //!   owner, genuine successor workflow and original historical key. Its two
 //!   complete phase approvals share the existing permanent request tombstone.
+//! - `custody approve-local-call`/`sign-local-call` consume a saved canonical
+//!   local/general Call under this process's pinned config and a dedicated
+//!   approval directory, with exact signed-frame approval and no network.
 //! - `custody serve-fee-final-transfer` uses DR-0297's separate kind-6 phase
 //!   3/4 full-balance transfer owner. Each worker refuses the other's phases;
 //!   both phase approvals use the same permanent request tombstone.
@@ -110,6 +113,7 @@ mod fsperm;
 mod generic_paid;
 mod keyfile;
 mod keygen;
+mod local_call_commands;
 mod positive_fee_split;
 mod positive_fee_split_approvals;
 mod positive_fee_split_commands;
@@ -181,6 +185,8 @@ where
     let action: &str = action.to_str().ok_or(ArgsError::NonUtf8Token)?;
     match action {
         "keygen" => keygen::run(args),
+        "approve-local-call" => local_call_commands::approve(args),
+        "sign-local-call" => local_call_commands::sign(args),
         "prepare-transfer" => asset_commands::prepare(args),
         "approve" => approve::run(args),
         "revoke" => revoke::run(args),

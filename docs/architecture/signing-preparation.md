@@ -75,6 +75,42 @@ of arbitrary contract arguments, durable authority, an approver, or protected
 key custody. Generic CLI routes still require their own protected signing and
 human approval flow.
 
+### Saved local/general Call protection
+
+`contract prepare-call` now resolves the same authenticated code/instance
+scopes as `contract call`, runs `LocalExecutionReview::build`, and saves the
+canonical unsigned Call intent under a private directory without loading a
+signing key or submitting it. `custody approve-local-call` independently
+decodes that saved file under its own pinned context, publisher and selected
+local/general policy; `LocalExecutionReview::from_saved_call` recomputes the
+exact signing frame and displays every signed field. A real terminal and exact typed confirmation
+are required before an expiring whole-frame approval is saved. The approvals
+live in an explicit private `local-call` child of `--approvals-dir`, which also
+holds this family's permanent revocation tombstones. Create that child under
+the custody UID with mode `0700`; `custody revoke` must receive the child path
+itself to cancel a saved Call request ID. Both approval and signing run under
+the custody UID, which must differ from the configured operator UID; an
+attended reviewer enters the confirmation through custody's terminal.
+
+`custody sign-local-call` uses only its protected key file and that saved
+approval; it checks publisher, phase-independent exact frame, expiry, revoke
+and signature authentication before exporting a canonical signed Call.
+`contract submit-signed-call` independently selects the expected network
+context and local/general policy, authenticates those signed bytes, and
+submits them with the existing replay-safe result/submission outputs. The
+original `contract call` immediate development-signer path is unchanged.
+
+The offline saved-file review does not replay publication-closure/scope
+validation; its display says so. The preparation command performs that
+validation before export. No semantic meaning is asserted for arbitrary
+contract arguments. Instantiate, Publish, a real separate-UID lifecycle,
+enrolled protected keys and M2 parent qualification remain separate work.
+The local and general devnet E2E owners each exercise one selected saved Call
+through real PTY approval, custody command signing and native SQLite
+submit/reopen, using the same disposable development key under one UID. Their
+other Calls remain on the existing development path. This is not a real-key
+enrollment or separate-UID qualification.
+
 ## Fee-claim review consumer
 
 [Saved successor fee-claim review](fee-claim-review.md) consumes the retained

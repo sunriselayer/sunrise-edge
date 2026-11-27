@@ -10,12 +10,14 @@ use abi::package_types::{
 use execution::call::InstanceTarget;
 use execution::call_authorization::ExecutionTarget;
 use execution::local_execution::{
-    LocalExecutionError, LocalExecutionMode, decode_local_execution_intent,
-    encode_local_execution_intent, local_execution_signing_frame,
+    LocalExecutionError, LocalExecutionIntent, LocalExecutionMode, LocalExecutionPolicy,
+    ResolvedExecutionScope, decode_local_execution_intent, encode_local_execution_intent,
+    local_execution_signing_frame,
 };
 use execution::publication::UnverifiedDependencyRef;
 use objects::AccessMode;
 
+use crate::HashSuiteResolver;
 use crate::local_execution_client::PreparedLocalExecution;
 use crate::review_presentation::{DisplayTextError, display_safe};
 
@@ -225,6 +227,57 @@ impl LocalExecutionReview {
             return Err(LocalExecutionReviewError::BindingMismatch);
         }
 
+        Self::render(
+            intent,
+            prepared.policy(),
+            Some(prepared.scopes()),
+            intent_bytes,
+            signable_frame,
+        )
+    }
+
+    /// Rebuilds the signed-field review and exact frame from a saved canonical
+    /// Call intent under a separately selected local policy. The publication
+    /// closure/scopes are not reverified by this offline review; the original
+    /// preparation owner must have validated them before export.
+    pub fn from_saved_call(
+        bytes: &[u8],
+        resolver: &HashSuiteResolver,
+        policy: &LocalExecutionPolicy,
+    ) -> Result<Self, LocalExecutionReviewError> {
+        if bytes.len() > MAX_LOCAL_EXECUTION_REVIEW_BYTES {
+            return Err(LocalExecutionReviewError::Limit);
+        }
+        let intent = decode_local_execution_intent(bytes)?;
+        if encode_local_execution_intent(&intent)? != bytes {
+            return Err(LocalExecutionReviewError::IntentMismatch);
+        }
+        if intent.mode != LocalExecutionMode::Call
+            || intent.call.context != *policy.context()
+            || intent.policy_digest != policy.digest(resolver)?
+            || intent.call.gas_limit > policy.max_gas()
+        {
+            return Err(LocalExecutionReviewError::BindingMismatch);
+        }
+        execution::call_authorization::validate_call_authorizations(
+            &intent.call,
+            &intent.authorizations,
+        )
+        .map_err(|_| LocalExecutionReviewError::BindingMismatch)?;
+        let frame = local_execution_signing_frame(policy.context(), &intent)?;
+        if frame.len() > MAX_LOCAL_EXECUTION_REVIEW_BYTES {
+            return Err(LocalExecutionReviewError::Limit);
+        }
+        Self::render(&intent, policy, None, bytes.to_vec(), frame)
+    }
+
+    fn render(
+        intent: &LocalExecutionIntent,
+        policy: &LocalExecutionPolicy,
+        scopes: Option<&[ResolvedExecutionScope]>,
+        intent_bytes: Vec<u8>,
+        signable_frame: Vec<u8>,
+    ) -> Result<Self, LocalExecutionReviewError> {
         let mut out = Renderer::new();
         out.text(
             "chain_id",
@@ -243,10 +296,10 @@ impl LocalExecutionReview {
                 LocalExecutionMode::Call => "call",
             },
         )?;
-        out.push("policy.profile", &prepared.policy().profile().to_string())?;
-        out.push("policy.max_gas", &prepared.policy().max_gas().to_string())?;
+        out.push("policy.profile", &policy.profile().to_string())?;
+        out.push("policy.max_gas", &policy.max_gas().to_string())?;
         out.push("policy.digest", &intent.policy_digest.to_string())?;
-        out.bytes("policy.canonical_bytes", &prepared.policy().encode()?)?;
+        out.bytes("policy.canonical_bytes", &policy.encode()?)?;
         out.bytes("request_id", &intent.call.request_id)?;
         out.bytes("sender", &intent.call.sender)?;
         out.push("nonce", &intent.call.nonce.to_string())?;
@@ -336,40 +389,44 @@ impl LocalExecutionReview {
                 )?;
             }
         }
-        out.push("scope_count", &prepared.scopes().len().to_string())?;
-        for (index, scope) in prepared.scopes().iter().enumerate() {
-            let prefix = format!("scope[{index}]");
-            instance(&mut out, &format!("{prefix}.target"), &scope.target)?;
-            out.text(
-                &format!("{prefix}.initializer"),
-                &scope.instance.initializer,
-                abi::MAX_ENTRYPOINT_BYTES,
-            )?;
-            let candidates =
-                std::iter::once(scope.interface.candidate()).chain(scope.interface.dependencies());
-            for (node_index, candidate) in candidates.enumerate() {
-                let artifact = candidate.artifact();
-                let node = format!("{prefix}.code_node[{node_index}]");
-                out.bytes(&format!("{node}.publisher"), artifact.origin().publisher())?;
-                out.bytes(&format!("{node}.seed"), artifact.origin().seed())?;
-                out.push(
-                    &format!("{node}.revision"),
-                    &artifact.revision().to_string(),
+        if let Some(scopes) = scopes {
+            out.push("scope_count", &scopes.len().to_string())?;
+            for (index, scope) in scopes.iter().enumerate() {
+                let prefix = format!("scope[{index}]");
+                instance(&mut out, &format!("{prefix}.target"), &scope.target)?;
+                out.text(
+                    &format!("{prefix}.initializer"),
+                    &scope.instance.initializer,
+                    abi::MAX_ENTRYPOINT_BYTES,
                 )?;
-                out.push(&format!("{node}.digest"), &candidate.digest().to_string())?;
-                out.push(
-                    &format!("{node}.wasm_profile"),
-                    &artifact.wasm_profile().to_string(),
-                )?;
-                out.push(
-                    &format!("{node}.semantics"),
-                    &artifact.semantics().to_string(),
-                )?;
-                out.push(
-                    &format!("{node}.wasm_bytes"),
-                    &artifact.wasm().len().to_string(),
-                )?;
+                let candidates = std::iter::once(scope.interface.candidate())
+                    .chain(scope.interface.dependencies());
+                for (node_index, candidate) in candidates.enumerate() {
+                    let artifact = candidate.artifact();
+                    let node = format!("{prefix}.code_node[{node_index}]");
+                    out.bytes(&format!("{node}.publisher"), artifact.origin().publisher())?;
+                    out.bytes(&format!("{node}.seed"), artifact.origin().seed())?;
+                    out.push(
+                        &format!("{node}.revision"),
+                        &artifact.revision().to_string(),
+                    )?;
+                    out.push(&format!("{node}.digest"), &candidate.digest().to_string())?;
+                    out.push(
+                        &format!("{node}.wasm_profile"),
+                        &artifact.wasm_profile().to_string(),
+                    )?;
+                    out.push(
+                        &format!("{node}.semantics"),
+                        &artifact.semantics().to_string(),
+                    )?;
+                    out.push(
+                        &format!("{node}.wasm_bytes"),
+                        &artifact.wasm().len().to_string(),
+                    )?;
+                }
             }
+        } else {
+            out.push("scope_validation", "not_replayed_from_saved_intent")?;
         }
         Ok(Self {
             display: out.output,
