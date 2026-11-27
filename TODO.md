@@ -51,6 +51,7 @@
   - [x] **own-created application asset/Coinの操作と限定復旧component**: [application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md)のmint/burnと[Coin custody](docs/architecture/standard-asset-application-coin-custody.md)のCoin操作・kind2/3 historical recoveryを既存profileで検証済み。
   - [x] **fee-claimの非承認preview/export component**: [開発用署名](docs/architecture/fee-claim-review.md)の構造表示と保存内容に限定し、protected fee-claim承認の完了とはしない。
   - [x] **positive fee-claim SplitのLeg/Claim component**: [操作内容policy](docs/architecture/positive-fee-claim-split-policy.md)と[別UID/PTY lifecycle](docs/architecture/positive-fee-split-uid-fixture.md)の既存結果に限定する。
+  - [x] **FinalTransferの保護Leg/Claimコードcomponent**: [別操作の契約](docs/architecture/final-fee-transfer-custody.md)に従い、元claimantの正確な全Coin移動を二段階でreview・承認・署名し、既存Splitとworker選択・承認phaseを分離した。CLI owning testsとClippyに限定する。別UID/PTY、実鍵、実host上のFinalTransfer実行、M2親の資格は未達。
   - [x] **original ordered protocol worker component**: [別UID/TLS worker](docs/architecture/local-protocol-custody.md)と停止後同一identity復旧を既存ownerで検証済み。
   - [x] **certified FastVote protected worker component**: [別UID/TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md)と停止後同一identity復旧を既存ownerで検証済み。
   - [x] **offline genesis authorの二段階保護review component**: [限定別UID検証](docs/development/validation/2026-11-04-m2-genesis-protected/README.md#current-source-follow-up-2026-11-13)で`894e5881`の既存ownerが1 passed/0 failed、nested/outerのreview切断拒否と4組のvalidator pairへのinstallを確認。実承認者・実鍵ceremonyとM2全体資格は未達。

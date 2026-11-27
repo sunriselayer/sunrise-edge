@@ -1,0 +1,9 @@
+# Recognized FinalTransfer fee-claim custody
+
+[DR-0297](decisions/0297-recognized-final-fee-transfer-custody.md) selects the full-balance original Standard Asset fee Coin transfer for a successor claim. Current validation and remaining M2 work belong in [TODO](../../TODO.md).
+
+The owner loads an independently verified successor workflow and the original certificate claimant, reconstructs the original signed Standard Asset package/resource/instance, checks the retained fee Coin's complete canonical bytes and reference, and builds only a `transfer` leg of its entire positive balance to the selected recipient. It derives the exact local signable frame. The second phase accepts only a canonical host request and outer `FinalTransfer` intent containing that same signed leg, fee reference, amount, recipient and historical claimant. It adds the existing full generic claim review and verifies each returned signature through the prepared SDK owner.
+
+The CLI uses `custody prepare-fee-final-leg`, `prepare-fee-final-claim`, `approve-fee-final-leg`, `approve-fee-final-claim`, `sign-fee-final-leg`, `sign-fee-final-claim` and `serve-fee-final-transfer`. The two approvals are separate exact-content records with expiry and one permanent request tombstone. The bounded local kind-6 wire uses phase 3/4 for FinalTransfer; the existing Split phase 1/2 bytes are unchanged. Each server accepts only its selected phase family and checks the peer UID, private key identity and saved approvals. The signed outer claim can be wrapped as an ordered candidate with an explicit checkpoint, which is outside the claimant signature.
+
+The retained object, amount and nonce are local proposal inputs. This component does not prove live escrow head, entitlement, current nonce, certified row generation/digests or final execution. The protected worker still needs distinct-UID/PTY lifecycle and actual enrolled historical keys before real-asset beta use.

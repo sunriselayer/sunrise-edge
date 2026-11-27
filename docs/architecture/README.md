@@ -23,6 +23,8 @@ owner. [Signing preparation](signing-preparation.md) distinguishes the selected
 role-specific boundaries from mechanical signature preparation; the
 [ZeroShare fee-claim custody](fee-claim-custody.md) describes its selected
 successor-only profile, while the
+[recognized FinalTransfer custody](final-fee-transfer-custody.md) describes its
+separate two-phase protected fee release, and the
 [original bond contract](original-bond-protected-signing.md) gives its narrower
 development profile. Source-specific evidence and release qualification belong
 in TODO. Historical alternatives remain in the [catalog](catalog.md),

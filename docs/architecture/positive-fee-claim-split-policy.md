@@ -69,9 +69,11 @@ gas outside the existing local-execution ceiling refuse.
    The existing `PreparedFeeClaim` then rechecks historical identity/selectors,
    derives the original exact outer frame and verifies its returned signature.
 
-Legacy Split without a v2 payout, FinalTransfer and other operations remain
-outside this owner. Their existing codecs, non-authorizing review and development
-CLI behavior are unchanged. No signature bytes, protocol ID, schema or candidate
+Legacy Split without a v2 payout and other operations remain outside this owner.
+[FinalTransfer](final-fee-transfer-custody.md) has a separate full-balance
+selection and protected phases; it does not change strict-partial Split bytes.
+The existing codecs, non-authorizing review and development CLI behavior are
+unchanged. No signature bytes, protocol ID, schema or candidate
 encoding is added or changed. The ordinary candidate checkpoint stays with the
 existing caller and candidate wrapper.
 
