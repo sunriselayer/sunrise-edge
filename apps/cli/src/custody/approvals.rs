@@ -20,9 +20,15 @@ pub(super) const APPROVALS_DIR_MODE: u32 = 0o700;
 pub(super) const APPROVAL_FILE_MODE: u32 = 0o600;
 const RECORD_VERSION: u8 = 1;
 const RECORD_HEADER_BYTES: usize = 1 + 32 + 8 + 4;
-/// A frame can never exceed the request frame bound (it is built from the
-/// same bounded artifact); reuse that bound rather than inventing a second.
-const MAX_RECORD_FILE_BYTES: usize = RECORD_HEADER_BYTES + MAX_CUSTODY_REQUEST_FRAME_BYTES;
+/// Covers both the original publication frame and the bounded generic paid
+/// frame, including signature-domain framing overhead. Existing record
+/// bytes and version remain unchanged.
+const MAX_RECORD_FILE_BYTES: usize = RECORD_HEADER_BYTES
+    + if MAX_CUSTODY_REQUEST_FRAME_BYTES > execution::paid_execution::MAX_PAID_INTENT_BYTES + 256 {
+        MAX_CUSTODY_REQUEST_FRAME_BYTES
+    } else {
+        execution::paid_execution::MAX_PAID_INTENT_BYTES + 256
+    };
 
 /// One human-approved exact signable frame, bound to its expected publisher
 /// and an explicit expiry.

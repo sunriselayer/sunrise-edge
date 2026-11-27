@@ -36,6 +36,9 @@ where
     if matches!(action, "paid-publish" | "paid-instantiate" | "paid-call") {
         return super::paid_execution::run(action, args);
     }
+    if action == "paid-submit-signed" {
+        return super::paid_execution::run_signed_submit(args);
+    }
     if action == "fastvote-replay" {
         return super::fastvote_network::run_replay(args);
     }

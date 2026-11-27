@@ -26,6 +26,8 @@ fn path(dir: &Path, id: &RequestId, phase: Phase) -> PathBuf {
     let suffix: &str = match phase {
         Phase::Leg => "leg",
         Phase::Claim => "claim",
+        Phase::FinalLeg => "final-leg",
+        Phase::FinalClaim => "final-claim",
     };
     dir.join(format!("{id}.positive-fee-split.{suffix}"))
 }
@@ -58,6 +60,8 @@ fn decode(bytes: &[u8]) -> Result<(Content, u64), CustodyError> {
         let phase: Phase = match r.array::<1>()?[0] {
             1 => Phase::Leg,
             2 => Phase::Claim,
+            3 => Phase::FinalLeg,
+            4 => Phase::FinalClaim,
             _ => return Err(super::wire::CustodyWireError::Truncated),
         };
         let request_id: RequestId =
@@ -169,6 +173,30 @@ mod tests {
         assert!(path(&dir.0, &leg.request_id, Phase::Claim).exists());
     }
     #[test]
+    fn final_transfer_phase_records_do_not_inherit_split_approvals() {
+        let dir = TempDir::new(0o700);
+        let leg: Content = content(Phase::Leg);
+        let claim: Content = content(Phase::Claim);
+        let final_leg: Content = content(Phase::FinalLeg);
+        let final_claim: Content = content(Phase::FinalClaim);
+        write(&dir.0, &leg, 100).unwrap();
+        write(&dir.0, &claim, 100).unwrap();
+        assert!(authorize(&dir.0, &final_leg, 1).is_err());
+        assert!(authorize(&dir.0, &final_claim, 1).is_err());
+        write(&dir.0, &final_leg, 100).unwrap();
+        write(&dir.0, &final_claim, 100).unwrap();
+        authorize(&dir.0, &final_leg, 1).unwrap();
+        authorize(&dir.0, &final_claim, 1).unwrap();
+        assert_ne!(
+            path(&dir.0, &leg.request_id, Phase::Leg),
+            path(&dir.0, &leg.request_id, Phase::FinalLeg)
+        );
+        revoke::revoke(&dir.0, &leg.request_id).unwrap();
+        for phase in [Phase::Leg, Phase::Claim, Phase::FinalLeg, Phase::FinalClaim] {
+            assert!(authorize(&dir.0, &content(phase), 1).is_err());
+        }
+    }
+    #[test]
     fn phase_key_identity_and_malformed_or_trailing_record_refuse() {
         let leg: Content = content(Phase::Leg);
         let bytes: Vec<u8> = encode(&leg, 30).unwrap();
@@ -179,7 +207,7 @@ mod tests {
         changed.push(0);
         assert!(decode(&changed).is_err());
         changed = bytes.clone();
-        changed[1] = 3;
+        changed[1] = 5;
         assert!(decode(&changed).is_err());
         let dir = TempDir::new(0o700);
         write(&dir.0, &leg, 30).unwrap();
