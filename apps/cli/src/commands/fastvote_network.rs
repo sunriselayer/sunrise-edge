@@ -96,7 +96,7 @@ const MAX_NETWORK_CONFIG_BYTES: usize = 64 * 1024;
 /// A recovered `dependency-ref`/`instance-ref` output: its destination
 /// path, its fixed artifact-kind label (see [`reserve_artifacts`]), and its
 /// exact recomputed canonical bytes.
-type DerivedReference<'a> = (&'a str, &'static str, Vec<u8>);
+pub(super) type DerivedReference<'a> = (&'a str, &'static str, Vec<u8>);
 
 /// The bounded network flags shared by every paid contract action and the
 /// top-level Standard Asset commands. Application construction remains in
@@ -511,6 +511,19 @@ pub(super) fn validate_paid_network_flags(parsed: &ParsedArgs) -> Result<(), Cli
     Ok(())
 }
 
+/// Network-backed unsigned custody preparation uses the same trusted
+/// genesis/cohort and source-query path, but creates no signed intent or
+/// certificate artifacts. Those outputs belong to a later exact replay.
+pub(super) fn validate_paid_unsigned_network_flags(parsed: &ParsedArgs) -> Result<(), CliError> {
+    if parsed.get(TLS_SERVER_NAME).is_some() || parsed.get(TLS_CA_CERT_DER_FILE).is_some() {
+        return Err(invalid(
+            "global TLS flags are unsupported with --fastvote-network; configure TLS independently for each cohort peer",
+        ));
+    }
+    parsed.require("--endpoint")?;
+    Ok(())
+}
+
 pub(super) fn selected_preparation_client<'a, T: Transport>(
     endpoints: &'a [FastVoteEndpoint<T>],
     selected: &str,
@@ -571,7 +584,7 @@ fn print_repin_diagnostic(error: &impl std::fmt::Display) {
     }
 }
 
-fn require_owned_lane(
+pub(super) fn require_owned_lane(
     admission: &VerifiedAdmissionProfile,
     request: &[u8; 32],
 ) -> Result<(), CliError> {
@@ -1046,7 +1059,7 @@ pub(super) fn run_replay<I: IntoIterator<Item = OsString>>(args: I) -> Result<()
 /// being trusted -- a mismatch means this saved intent was not built by
 /// this CLI's own conventions, and recovery is refused rather than writing
 /// an unverified reference.
-fn recompute_derived_reference<'a>(
+pub(super) fn recompute_derived_reference<'a>(
     parsed: &'a ParsedArgs,
     resolver: &sunrise_edge_client::HashSuiteResolver,
     context: &sunrise_edge_client::PublicationContext,

@@ -38,6 +38,9 @@
 //!   kind-7 decoder; see `fee_claim_zero`. There is no `sign-fee-claim`
 //!   custody command: the sole signing consumer is the existing `economics
 //!   fee-claim-sign` with its three custody signer flags.
+//! - `custody approve-paid`/`sign-paid` use exact canonical generic paid
+//!   request/policy files and a fresh endpoint observation under custody's
+//!   pinned context; the separate signer UID never accepts a supplied frame.
 //! - `custody prepare-transfer`/`prepare-split`/`prepare-merge`/
 //!   `prepare-mint`/`prepare-burn`/`prepare-create` export preimages without
 //!   approval; `sign-transfer`/`sign-split`/`sign-merge`/`sign-mint`/
@@ -99,6 +102,7 @@ mod fee_claim_zero;
 mod fee_claim_zero_commands;
 mod fee_claim_zero_wire;
 mod fsperm;
+mod generic_paid;
 mod keyfile;
 mod keygen;
 mod positive_fee_split;
@@ -225,6 +229,8 @@ where
         "serve-bond-outer" => bond_commands::serve_worker(args, bond_wire::BondPhase::Outer),
         "approve-fee-claim" => fee_claim_zero_commands::approve_fee_claim(args),
         "serve-fee-claim" => fee_claim_zero_commands::serve(args),
+        "approve-paid" => generic_paid::approve(args),
+        "sign-paid" => generic_paid::sign(args),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }
 }
