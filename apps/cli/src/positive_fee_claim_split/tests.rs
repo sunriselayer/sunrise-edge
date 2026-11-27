@@ -8,6 +8,7 @@ use sunrise_edge_client::{AtomicityDomainId, ChainId, LocalSigner};
 
 struct Fixture {
     known: KnownStandardAsset,
+    root_digest: Digest32,
     resolver: HashSuiteResolver,
     context: PublicationContext,
     domain: AtomicityDomainId,
@@ -97,6 +98,7 @@ impl Fixture {
         };
         Self {
             known,
+            root_digest: root.digest(),
             resolver: protocol.resolver().clone(),
             context,
             domain: protocol.domain(),
@@ -145,6 +147,129 @@ impl Fixture {
             reference,
             hash_epoch: Epoch::new(0),
         }
+    }
+}
+
+/// Source-verified original genesis plus a deliberately synthetic successor
+/// claim envelope. This feeds the disposable UID/PTY approval primitive test;
+/// it is not a verified historical committee or live host preparation.
+pub(crate) struct SyntheticFinalTransferMaterial {
+    pub(crate) terms: PositiveSplitTerms,
+    pub(crate) object: RetainedFeeObject,
+    pub(crate) claimant: HistoricalClaimantPin,
+    pub(crate) root_digest: Digest32,
+    pub(crate) leg_frame: Vec<u8>,
+    pub(crate) signed_leg: Vec<u8>,
+    pub(crate) leg_review: String,
+    pub(crate) outer_frame: Vec<u8>,
+    pub(crate) signed_outer: Vec<u8>,
+    pub(crate) request_bytes: Vec<u8>,
+    pub(crate) intent_bytes: Vec<u8>,
+    pub(crate) outer_review: String,
+}
+
+pub(crate) fn synthetic_final_transfer_material() -> SyntheticFinalTransferMaterial {
+    use sunrise_edge_client::bond_registration::BondResourceId;
+    use sunrise_edge_client::{FeeClaimPrepareRequest, HashAlgorithmId};
+
+    let f = Fixture::new();
+    let mut terms: PositiveSplitTerms = f.terms.clone();
+    terms.amount = 100;
+    let prepared: PreparedLocalExecution = prepare_recognized_leg(
+        &f.known,
+        &f.resolver,
+        &f.context,
+        f.domain,
+        f.claimant,
+        &terms,
+        &f.object,
+        RecognizedLegKind::FinalTransfer,
+    )
+    .unwrap();
+    let leg_frame: Vec<u8> = prepared.signable_frame().to_vec();
+    let leg_review: String = FinalTransferMeaning::build(
+        f.claimant,
+        f.context.clone(),
+        f.root_digest,
+        *f.known.code.artifact_digest(),
+        &f.known,
+        &terms,
+        &f.object,
+        &leg_frame,
+    )
+    .unwrap()
+    .render_text()
+    .to_owned();
+    let leg_signature: Vec<u8> = f.signer.sign_framed(&leg_frame).unwrap();
+    let signed_leg: Vec<u8> =
+        encode_signed_local_execution(&prepared.finalize(leg_signature).unwrap()).unwrap();
+    let request = FeeClaimPrepareRequest {
+        context: f.context.clone(),
+        escrow_request_id: terms.escrow_request_id,
+        request_id: terms.request_id,
+        validator_id: f.claimant.validator,
+        claimant_public_key: *f.claimant.public_key.as_bytes(),
+        recipient: terms.recipient,
+        signed_leg: Some(signed_leg.clone()),
+    };
+    let intent = FeeClaimIntent {
+        context: f.context.clone(),
+        request_id: terms.request_id,
+        escrow_request_id: terms.escrow_request_id,
+        certificate_epoch: f.claimant.certificate_epoch,
+        validator_id: f.claimant.validator,
+        resource_id: BondResourceId::new(
+            public_standard_asset::ASSET_OPAQUE_DOMAIN,
+            *f.known.asset.as_bytes(),
+        )
+        .unwrap(),
+        expected_generation: 1,
+        expected_fee_output: f.object.reference.clone(),
+        expected_previous_row_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xc1; 32]),
+        expected_next_row_digest: Digest32::new(HashAlgorithmId::Sha2_256, [0xc2; 32]),
+        share_amount: terms.amount,
+        recipient: terms.recipient,
+        operation: FeeClaimOperation::FinalTransfer {
+            leg: signed_leg.clone(),
+        },
+    };
+    let request_bytes: Vec<u8> = request.encode().unwrap();
+    let intent_bytes: Vec<u8> = encode_fee_claim_intent(&intent).unwrap();
+    let digest: Digest32 =
+        node_core::fee_claims::fee_claim_intent_digest(&f.resolver, &intent).unwrap();
+    let outer_frame: Vec<u8> =
+        node_core::fee_claims::fee_claim_signing_frame(&f.context, digest).unwrap();
+    let outer_signature: Vec<u8> = f.signer.sign_framed(&outer_frame).unwrap();
+    let signed_outer: Vec<u8> = node_core::fee_claims::codec::encode_signed_fee_claim_intent(
+        &node_core::fee_claims::codec::SignedFeeClaimIntent {
+            intent,
+            signature: outer_signature.try_into().unwrap(),
+        },
+    )
+    .unwrap();
+    let outer_review = format!(
+        "review_kind=synthetic_final_transfer_outer_approval_primitive\nverified_original_genesis={}\nsuccessor_committee_and_host=synthetic_not_verified\nclaimant={}\nrequest={}\namount={}\nrecipient={}\ncanonical_intent={}\nouter_frame={}\n",
+        f.root_digest,
+        f.claimant.public_key,
+        crate::hex::encode_hex(&terms.request_id),
+        terms.amount,
+        terms.recipient,
+        crate::hex::encode_hex(&intent_bytes),
+        crate::hex::encode_hex(&outer_frame),
+    );
+    SyntheticFinalTransferMaterial {
+        terms,
+        object: f.object,
+        claimant: f.claimant,
+        root_digest: f.root_digest,
+        leg_frame,
+        signed_leg,
+        leg_review,
+        outer_frame,
+        signed_outer,
+        request_bytes,
+        intent_bytes,
+        outer_review,
     }
 }
 
