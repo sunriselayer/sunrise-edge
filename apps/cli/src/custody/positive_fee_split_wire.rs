@@ -18,6 +18,8 @@ pub(super) const MAX_REQUEST_BYTES: usize = MAX_LEG_BYTES
 pub(super) enum Phase {
     Leg = 1,
     Claim = 2,
+    FinalLeg = 3,
+    FinalClaim = 4,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,18 +37,30 @@ pub(super) enum Request {
         request: Vec<u8>,
         intent: Vec<u8>,
     },
+    FinalLeg(LegRequest),
+    FinalClaim {
+        leg: LegRequest,
+        signed_leg: Vec<u8>,
+        request: Vec<u8>,
+        intent: Vec<u8>,
+    },
 }
 
 impl Request {
     pub(super) fn leg(&self) -> &LegRequest {
         match self {
-            Self::Leg(leg) | Self::Claim { leg, .. } => leg,
+            Self::Leg(leg)
+            | Self::Claim { leg, .. }
+            | Self::FinalLeg(leg)
+            | Self::FinalClaim { leg, .. } => leg,
         }
     }
     pub(super) const fn phase(&self) -> Phase {
         match self {
             Self::Leg(_) => Phase::Leg,
             Self::Claim { .. } => Phase::Claim,
+            Self::FinalLeg(_) => Phase::FinalLeg,
+            Self::FinalClaim { .. } => Phase::FinalClaim,
         }
     }
 }
@@ -135,6 +149,12 @@ pub(super) fn encode(request: &Request) -> Result<Vec<u8>, CustodyWireError> {
         request,
         intent,
         ..
+    }
+    | Request::FinalClaim {
+        signed_leg,
+        request,
+        intent,
+        ..
     } = request
     {
         put_bytes(
@@ -145,7 +165,8 @@ pub(super) fn encode(request: &Request) -> Result<Vec<u8>, CustodyWireError> {
         put_bytes(&mut out, request, MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES)?;
         put_bytes(&mut out, intent, MAX_FEE_CLAIM_INTENT_BYTES)?;
     }
-    if out.len() > MAX_REQUEST_BYTES || (request.phase() == Phase::Leg && out.len() > MAX_LEG_BYTES)
+    if out.len() > MAX_REQUEST_BYTES
+        || (matches!(request.phase(), Phase::Leg | Phase::FinalLeg) && out.len() > MAX_LEG_BYTES)
     {
         return Err(CustodyWireError::FrameTooLarge {
             actual: out.len(),
@@ -172,7 +193,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Request, CustodyWireError> {
         return Err(CustodyWireError::UnsupportedMessageType(kind));
     }
     let phase: u8 = r.array::<1>()?[0];
-    if !matches!(phase, 1 | 2) {
+    if !matches!(phase, 1..=4) {
         return Err(CustodyWireError::UnsupportedMessageType(phase));
     }
     let terms: PositiveSplitTerms = PositiveSplitTerms {
@@ -198,16 +219,31 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Request, CustodyWireError> {
             canonical_bytes: r.bytes(MAX_AUTHENTICATED_OBJECT_BODY_BYTES)?,
         },
     };
-    let result: Request = if phase == 1 {
-        Request::Leg(leg)
-    } else {
-        Request::Claim {
-            leg,
-            signed_leg: r
-                .bytes(sunrise_edge_client::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES)?,
-            request: r.bytes(MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES)?,
-            intent: r.bytes(MAX_FEE_CLAIM_INTENT_BYTES)?,
+    let result: Request = match phase {
+        1 => Request::Leg(leg),
+        3 => Request::FinalLeg(leg),
+        2 | 4 => {
+            let signed_leg =
+                r.bytes(sunrise_edge_client::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES)?;
+            let request = r.bytes(MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES)?;
+            let intent = r.bytes(MAX_FEE_CLAIM_INTENT_BYTES)?;
+            if phase == 2 {
+                Request::Claim {
+                    leg,
+                    signed_leg,
+                    request,
+                    intent,
+                }
+            } else {
+                Request::FinalClaim {
+                    leg,
+                    signed_leg,
+                    request,
+                    intent,
+                }
+            }
         }
+        _ => return Err(CustodyWireError::UnsupportedMessageType(phase)),
     };
     r.finish()?;
     if encode(&result)? != bytes {
@@ -251,6 +287,13 @@ mod tests {
                 request: vec![13],
                 intent: vec![14],
             },
+            Request::FinalLeg(leg()),
+            Request::FinalClaim {
+                leg: leg(),
+                signed_leg: vec![15],
+                request: vec![16],
+                intent: vec![17],
+            },
         ] {
             let bytes: Vec<u8> = encode(&request).unwrap();
             assert_eq!(&bytes[..2], &[1, 6]);
@@ -266,7 +309,7 @@ mod tests {
             let mut changed: Vec<u8> = bytes.clone();
             changed.push(0);
             assert!(decode(&changed).is_err());
-            for (index, value) in [(0, 2), (1, 5), (2, 0), (2, 3)] {
+            for (index, value) in [(0, 2), (1, 5), (2, 0), (2, 5)] {
                 changed = bytes.clone();
                 changed[index] = value;
                 assert!(decode(&changed).is_err());
@@ -292,6 +335,8 @@ mod tests {
         expected.extend_from_slice(&1_u32.to_be_bytes());
         expected.push(7);
         assert_eq!(encode(&Request::Leg(leg())).unwrap(), expected);
+        expected[2] = 3;
+        assert_eq!(encode(&Request::FinalLeg(leg())).unwrap(), expected);
         expected[2] = 2;
         for byte in [12_u8, 13, 14] {
             expected.extend_from_slice(&1_u32.to_be_bytes());
@@ -299,6 +344,17 @@ mod tests {
         }
         assert_eq!(
             encode(&Request::Claim {
+                leg: leg(),
+                signed_leg: vec![12],
+                request: vec![13],
+                intent: vec![14],
+            })
+            .unwrap(),
+            expected
+        );
+        expected[2] = 4;
+        assert_eq!(
+            encode(&Request::FinalClaim {
                 leg: leg(),
                 signed_leg: vec![12],
                 request: vec![13],

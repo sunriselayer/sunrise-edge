@@ -36,11 +36,17 @@
 //! - `custody approve-local-call`/`sign-local-call` consume a saved canonical
 //!   local/general Call under this process's pinned config and a dedicated
 //!   approval directory, with exact signed-frame approval and no network.
+//! - `custody serve-fee-final-transfer` uses DR-0297's separate kind-6 phase
+//!   3/4 full-balance transfer owner. Each worker refuses the other's phases;
+//!   both phase approvals use the same permanent request tombstone.
 //! - `custody approve-fee-claim`/`serve-fee-claim` use the same owner with
 //!   the DR-0257 protected ZeroShare fee-claim policy, under one closed
 //!   kind-7 decoder; see `fee_claim_zero`. There is no `sign-fee-claim`
 //!   custody command: the sole signing consumer is the existing `economics
 //!   fee-claim-sign` with its three custody signer flags.
+//! - `custody approve-paid`/`sign-paid` use exact canonical generic paid
+//!   request/policy files and a fresh endpoint observation under custody's
+//!   pinned context; the separate signer UID never accepts a supplied frame.
 //! - `custody prepare-transfer`/`prepare-split`/`prepare-merge`/
 //!   `prepare-mint`/`prepare-burn`/`prepare-create` export preimages without
 //!   approval; `sign-transfer`/`sign-split`/`sign-merge`/`sign-mint`/
@@ -101,7 +107,10 @@ pub(crate) mod error;
 mod fee_claim_zero;
 mod fee_claim_zero_commands;
 mod fee_claim_zero_wire;
+#[cfg(test)]
+mod final_transfer_uid_fixture;
 mod fsperm;
+mod generic_paid;
 mod keyfile;
 mod keygen;
 mod local_call_commands;
@@ -218,6 +227,21 @@ where
             positive_fee_split_commands::sign(args, positive_fee_split_wire::Phase::Claim)
         }
         "serve-fee-split" => positive_fee_split_commands::serve(args),
+        "prepare-fee-final-leg" => positive_fee_split_commands::prepare_final_leg(args),
+        "prepare-fee-final-claim" => positive_fee_split_commands::prepare_final_claim(args),
+        "approve-fee-final-leg" => {
+            positive_fee_split_commands::approve(args, positive_fee_split_wire::Phase::FinalLeg)
+        }
+        "approve-fee-final-claim" => {
+            positive_fee_split_commands::approve(args, positive_fee_split_wire::Phase::FinalClaim)
+        }
+        "sign-fee-final-leg" => {
+            positive_fee_split_commands::sign(args, positive_fee_split_wire::Phase::FinalLeg)
+        }
+        "sign-fee-final-claim" => {
+            positive_fee_split_commands::sign(args, positive_fee_split_wire::Phase::FinalClaim)
+        }
+        "serve-fee-final-transfer" => positive_fee_split_commands::serve_final(args),
         "prepare-bond-inner" => bond_commands::prepare_inner(args),
         "prepare-bond-outer" => bond_commands::prepare_outer(args),
         "approve-bond-inner" => bond_commands::approve(args, bond_wire::BondPhase::Inner),
@@ -231,6 +255,8 @@ where
         "serve-bond-outer" => bond_commands::serve_worker(args, bond_wire::BondPhase::Outer),
         "approve-fee-claim" => fee_claim_zero_commands::approve_fee_claim(args),
         "serve-fee-claim" => fee_claim_zero_commands::serve(args),
+        "approve-paid" => generic_paid::approve(args),
+        "sign-paid" => generic_paid::sign(args),
         other => Err(CliError::UnknownCustodyAction(other.to_string())),
     }
 }

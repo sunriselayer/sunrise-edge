@@ -1,6 +1,19 @@
 # Sunrise Edge: 現在のTODO
 
-更新: 2026-11-24 (Asia/Singapore)。元85チェックのうち74件は完了、元の未完了は下の11件（親11件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+更新: 2026-11-25 (Asia/Singapore)。元85チェックのうち74件は完了、元の未完了は下の11件（親11件）。下位チェックは実用上の進捗を示し、元85件には加えない。`[x]`は記載した範囲で確認済み、親の完了は元の条件で判定する。完了経緯、旧sourceごとの成功・失敗、元の対応表は[固定commitの旧TODO][historical-todo]に保存した。ここには現在必要な条件だけを置く。設計は[architecture](docs/architecture/README.md)、実行方法は[validation profiles](docs/architecture/repository-validation.md)、元のbinding条件は[preserved roadmap](docs/development/history/roadmap-through-2026-10-06.md)が所有する。文書整理だけで実装・検証・公開を完了とはしない。
+
+## 公開ベータ: 実資産・全機能
+
+実資産を扱い、現行repoの実装済み機能と公開経路を全て対象とする公開ベータを進める。Standard Assetだけ、FastVoteだけ、`/v1/events`を除く、generic paidを除くといった機能制限は置かない。ベータという名称を状態のリセット・巻き戻しや実資産保護の省略理由にしない。未実装・未検証の機能は完了扱いにせず、下のTODOと公開前の作業に残す。現行の[security policy](SECURITY.md)は実資産custodyとcertified surfaceの公開をまだ認めておらず、証拠を揃えて公開前に改訂する。
+
+- [x] 公開ベータの目標を実資産・全機能に訂正した（2026-11-25）。既存の各host/adapterは異なる経路を提供し、一つのcertified relayだけでは全機能を公開できないことを確認した。これは公開資格の達成ではない。
+- [ ] 全ての実装済み機能・入口・host・backendと未実装/未検証の機能を対応付け、提供を完了する。受け付ける取引、FastVote管理・drain、generic paid、direct/ordered、handoff/successor、参照などを勝手に除外しない。
+  - [x] 現行sourceの実装済み主要経路とhostを[構成一覧](docs/architecture/compositions-and-capabilities.md#concrete-composition-owners)・実sourceで照合した。event/directはdevnet実行のみ、certified/orderedはoriginal host、successor/handoffはsuccessor host、Cloudflare内蔵validatorは一部経路という境界を確認。全機能を公開するhost/入口と未実装機能の完了は残る。
+- [ ] 全対象操作の保護鍵・正確な内容確認・実承認者・復旧/取消と、実chain/genesis・validator/運営担当・asset/economics・artifactを固定して通す。M2/D04/D06/M6の結果を共用する。
+- [ ] 全公開入口を実配置で構成し、TLS、upstream認証、要求量・同時実行の上限、停止手段を確認する。到達する全経路を独立にsecurity reviewし、非公開指摘を修正・再確認する。D02/M1と結果を共用する。
+- [ ] 使用する全store/hostで実host/media/fsync、停止・同じ状態からの再開、exact replay、別hostのbackup復旧・writer failover/fenceを確認する。資産状態を巻き戻さない。M3/D07と結果を共用する。
+- [ ] 最終sourceのowning checks、全7 CI lane・集約`check`、対象runtimeのRELEASE artifactと実行結果を揃え、外部clientから全公開機能・故障/再開を確認する。M7/D07と結果を共用する。
+- [ ] 実endpoint・asset、監視・停止・復旧手順、残余リスクを記録し、実資産を受ける前に[security policy](SECURITY.md)を実態に合わせて改訂して人が公開ベータのgo/no-goを決める。D08/M8と結果を共用する。
 
 ## コード・検証: 親5件
 
@@ -23,12 +36,17 @@
 
 - [ ] **M2: protected signerと操作内容レビューを実装・検証する**
   - 必須範囲: 保護された鍵backend、operator/authority分離、操作ごとの正確な内容確認、拒否・故障、必要な復旧・交換・取消。自動protocol署名と人のasset/governance承認を分ける。
-  - 初期release対象の選択（2026-11-13）: 既存の選択済みfamilyに限定する。generic local/general・paidとFinalTransferは初期release対象外の将来範囲として残し、実装・検証完了とは数えない。
+  - 過去の初期release対象の選択（2026-11-13）: 当時は既存の選択済みfamilyに限定した。generic local/general・paidとFinalTransferは未完了であり、2026-11-25の全機能公開ベータの対象からは除外しない。
+  - 2026-11-25の実資産・全機能公開ベータは、上の2026-11-13の限定選択を引き継がない。generic local/general・paidとFinalTransferを勝手に除外せず、未実装・未検証の対象として追う。既存のStandard Asset保護署名とFastVote送信の同一実行も未検証。
   - 完了済みの小項目は下のチェックで保持する。各結果のsource/profileと限界は[旧TODO][historical-todo]と[signing contracts](docs/architecture/signing-preparation.md)を参照する。個別合格を全familyの資格に転用しない。
   - 残件: original bondの局所観測と承認・署名前の反復照会はPR #362で実装済み、実hostと保護署名の限定結合も下の小項目で検証済み。選択済みfamilyのlifecycleと元ownerの対応付けは[照合表](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)で整理済み。同一sourceの実UID/RELEASE全体資格、実承認者/鍵enrollmentとM2親の受入は未達。対象外の全prepared型や全identity移行を新しい必須条件にしない。
-  - [x] 初期対象を選択済みfamilyに限定し、lifecycleと検証ownerを[対応付けた](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)。
+  - [x] 2026-11-13の旧対象についてlifecycleと検証ownerを[対応付けた](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)。全機能ベータの資格には転用しない。
   - [x] 下のZeroShare componentのコードを[PR #381](https://github.com/sunriselayer/sunrise-edge/pull/381)でmainへ統合し、限定資格を下のCI結果で確認した。
   - [ ] 選択済みfamilyを実UID/RELEASEと実承認者・保護鍵で通し、最終reviewを終える。
+  - [ ] 実資産ベータの全対象操作を保護署名し、実承認者・実鍵・復旧/取消まで同一profileで通す。既存のStandard AssetとFastVoteの結合も含む。
+  - [x] **generic paidの正確なreview・鍵なし準備component**: `7abcc7c7`で`PaidExecutionReview`がCall/Instantiate/Publishの料金同意・内容・canonical署名frameを上限付きで照合し、CLIが保護鍵なしでunsigned intentを保存する。FastVote用request IDは署名済みgenesisのOwned laneと承認前に照合する。SDK 11件、CLIの限定6件、Clippyと独立reviewを通した。別UID/PTYのPublish direct結果は次の小項目で追い、他family・FastVote・実鍵とM2全体資格は未達。
+  - [x] **generic paid Publishの別UID/PTY・direct送信component**: [使い捨てDocker fixture](scripts/check-docker-generic-paid-custody.py)でoperator UID 12002から鍵なしunsignedを作成し、custody UID 12001の実PTYでsender・料金・Publish主要内容と確認文を照合・承認・署名して、実SQLite/native HTTPへ同じsigned intentを送信し成功した。鍵・approval storeへのoperatorアクセス、承認前署名、非PTY/誤確認、取消後の新規署名を各拒否した。disposable固定鍵の限定検証であり、Instantiate/Callは次の小項目で追う。FastVote送信、実承認者・実鍵は未達。
+  - [x] **generic paid Instantiate/Callの別UID/PTY・direct送信component**: 同じ[Docker fixture](scripts/check-docker-generic-paid-custody.py)で保護署名済みPublishのcode refからInstantiate、そのinstance refからCallを順に実行した。各操作を別UIDでunsigned作成、実PTYでsender・料金・instance/entrypoint/argsと確認文を照合、承認・署名し、実SQLite/native HTTPへ保存済みsigned intentを送信して成功した。両操作の承認前署名・誤確認も拒否した。FastVote送信、実承認者・実鍵とM2全体資格は未達。
   - [x] **publicationの保護承認と取消・同一鍵復旧・交換component**: [専用custody](docs/architecture/local-publication-custody.md)と[lifecycle](docs/architecture/publication-custody-lifecycle.md)の既存実UID/PTY/拒否・restart結果に限定する。
   - [x] **genesis Standard Assetのtransfer・split/merge・mint/burn・create component**: [transfer](docs/architecture/standard-asset-transfer-custody.md)、[split/merge](docs/architecture/standard-asset-split-merge-custody.md)、[mint/burn](docs/architecture/standard-asset-mint-burn-custody.md)、[create](docs/architecture/standard-asset-create-asset-custody.md)の実CLI・別UID結果と、旧TODOに記録した限定復旧・live Coin handoffを含む。
   - [x] **own-created application asset/Coinの操作と限定復旧component**: [application asset pin](docs/architecture/decisions/0258-mint-burn-application-asset-pin.md)のmint/burnと[Coin custody](docs/architecture/standard-asset-application-coin-custody.md)のCoin操作・kind2/3 historical recoveryを既存profileで検証済み。
@@ -36,6 +54,8 @@
   - [x] **generic local/generalの非承認review component**: `PreparedLocalExecution`からcanonical intent・policy digest・scope・署名frameを再検査し、署名対象を固定上限内で完全表示する[SDK review](docs/architecture/signing-preparation.md#localgeneral-review-consumer)を実装。local/general owner 14件、review拒否unit 1件、fmt・all-target Clippyが成功。保護鍵、独立承認、実UID、契約引数の意味解釈とM2全体資格は未達。
   - [x] **generic local/general Callの保存・独立承認・保護署名・送信component**: [PR #406](https://github.com/sunriselayer/sunrise-edge/pull/406)のcode head `f6bf6d99`で[保存Call経路](docs/architecture/signing-preparation.md#saved-localgeneral-call-protection)を実装。SDK 14件・custody拒否/署名1件、local/general各1件の実PTY承認→custody署名→native SQLite送信・再起動比較、fmt・Clippy・独立reviewを通した。選択したCallのみの同一UID/開発鍵結果であり、Instantiate/Publish、全Callの実運用、実UID、実承認者/保護鍵、契約引数の意味解釈とM2親は別途追う。
   - [x] **positive fee-claim SplitのLeg/Claim component**: [操作内容policy](docs/architecture/positive-fee-claim-split-policy.md)と[別UID/PTY lifecycle](docs/architecture/positive-fee-split-uid-fixture.md)の既存結果に限定する。
+  - [x] **FinalTransferの保護Leg/Claimコードcomponent**: [別操作の契約](docs/architecture/final-fee-transfer-custody.md)に従い、元claimantの正確な全Coin移動を二段階でreview・承認・署名し、既存Splitとworker選択・承認phaseを分離した。CLI owning testsとClippyに限定する。
+  - [x] **FinalTransfer phase 3/4の別UID/実PTY承認レコード・署名primitive**: Docker fixtureの14実行で元genesis検証と正規SDK生成の全Coin legを使い、合成successor outer claimに対する保存内容一致・別UIDのディレクトリ/ファイル拒否・二段階PTY入力・署名frame一致・改変拒否・同一鍵再配置・取消を[限定fixture](docs/architecture/final-fee-transfer-custody.md#disposable-uidpty-primitive)で確認した。実approve/sign/serveコマンド、実successor committee/host、workerの別UID lifecycle、実承認者/保護鍵、M2親の資格は未達。
   - [x] **original ordered protocol worker component**: [別UID/TLS worker](docs/architecture/local-protocol-custody.md)と停止後同一identity復旧を既存ownerで検証済み。
   - [x] **certified FastVote protected worker component**: [別UID/TLS lifecycle](docs/architecture/local-certified-protocol-custody-fixture.md)と停止後同一identity復旧を既存ownerで検証済み。
   - [x] **offline genesis authorの二段階保護review component**: [限定別UID検証](docs/development/validation/2026-11-04-m2-genesis-protected/README.md#current-source-follow-up-2026-11-13)で`894e5881`の既存ownerが1 passed/0 failed、nested/outerのreview切断拒否と4組のvalidator pairへのinstallを確認。実承認者・実鍵ceremonyとM2全体資格は未達。
@@ -84,7 +104,7 @@
 | 区分 | 現在必要な残件 |
 | --- | --- |
 | N1 readiness / N2 successor | 選択した別UID worker/frontendと旧sourceの元owner実UID検証は存在する。現行sourceでの対応結果は上のN1/N2補助チェックで個別に追う。元のeligible key、retained slot、fresh serving warrant、committee/fenceを省略しない。 |
-| N3 対象consumer | 2026-11-13に初期releaseを既存の選択済みfamilyへ限定した。offline genesisとoriginal bondの限定経路を含む。generic local/general・paid、FinalTransferは初期release対象外の将来範囲。successor live-epoch担保移動はoriginal genesis限定profileの資格に含めない。 |
+| N3 対象consumer | 2026-11-13の旧選択は既存family限定だった。2026-11-25の実資産・全機能公開ベータではgeneric local/general・paidとFinalTransferも除外せず、実装・保護署名・検証の未完了として追う。旧original genesis限定profileの結果をsuccessor live-epoch担保移動の資格に転用しない。 |
 | N4 lifecycle | `8bb97ddf`の選択済みfamilyについて実装と元ownerの[対応付け](docs/architecture/signing-preparation.md#selected-family-lifecycle-correspondence)を完了。今回の照合では、採用済み契約に対する追加の未対応遷移は特定されなかった。同一鍵の再読込、別identityの署名、実object/membership移行を区別し、genesis/bondの限定restartを本番backup復旧へ広げない。過去の実行結果は各source/profileのまま保持し、N5の新たな実UID/RELEASE合格とはしない。 |
 | N5 全体資格 | 選択済みconsumerのrequired・実UID/PTY・Native13 A/B・保存RELEASE runtime・独立最終reviewを[既存ownerへ対応付け済み](docs/architecture/signing-preparation.md#qualification-owner-correspondence)。全体資格は未達であり、G6の独立最終review/issue dispositionをCI・技術review・部分再実行で代替しない。停止条件が残る間は全体資格を閉じるためだけの一括再検証を増やさない。元のselector、7 epochs/e8、候補2件、8 links、35 rolesを維持する。 |
 
@@ -92,7 +112,7 @@
 
 これらは実役割・実値・実環境・公開権限の条件であり、fixture値やlocal Docker/loopbackの合格とは分ける。
 
-作業順（2026-11-14）: D04/D06/D07/D08/M6/M8の本番準備は後回しとし、既存の選択済みfamilyの非本番実装・検証を優先する。未確定の実運用情報を既存資料の提出待ちにはしない。元の完了条件は維持する。
+作業順（2026-11-25）: 上の実資産・全機能公開ベータを進める。D04/D06/D07/D08/M6/M8の実担当・値・復旧・承認をベータでも通し、元の完全release条件は保持する。未確定の実運用情報を既存資料の提出待ちにはしない。
 
 - [ ] **D04: 実validator・custody/admin役割とrelease profileを選ぶ**: 独立operators、real genesis/chain pins、economics、supported routes、exact release artifactを固定する。Native+SQLite firstの技術選択だけでは足りない。
   - [ ] operatorsとcustody/admin担当を決める。
@@ -132,7 +152,8 @@
    記録する。startup 0、check件数、hash/countだけはsemantic/runtime合格ではない。
    失われたrawを現在存在するものとしてリンクせず、回収可否と証拠の限界を明記する。
 7. 正常なmergeは該当する元の条件を満たした後だけ。squash/rebase/forceや
-   未認定release/main mergeを行わない。公開許可はD08/M8の別判断。
+   未認定release/main mergeを行わない。実資産・全機能の公開ベータは上記の全範囲と
+   D08/M8の実操作承認を通して判断し、完全releaseの親資格と区別する。
 
 [Validation profiles](docs/architecture/repository-validation.md)と
 [元production gate](docs/development/history/roadmap-through-2026-10-06.md#cli-first-node-production-gate)
@@ -140,7 +161,7 @@
 
 ## 作業境界
 
-利用者は2026-11-16に停止済み監査・障害検証の再試行を指示した。ZeroShareの限定fixtureはPR #381、独立anchor VMのserial診断はPR #382、現行pinの元9境界と別実行のpartial-WALは上の検証記録で進んだ。D02/M1独立監査と旧M3 torn-WAL assessment/mechanism2は未完走であり、部分結果を合格に転用しない。実鍵・host user・security policy・deploy・公開設定はこのTODO整理では変更しない。未選択のTypeScript client、explorer/wallet、Ledger、Unique Asset、multisig、contract upgrade/irreversible relinquishment/atomic migration、ZK、cross-domain atomicity、追加provider/HA/scaleは広告しない。必要になった時は元の条件を参照する。
+利用者は2026-11-16に停止済み監査・障害検証の再試行を指示した。ZeroShareの限定fixtureはPR #381、独立anchor VMのserial診断はPR #382、現行pinの元9境界と別実行のpartial-WALは上の検証記録で進んだ。D02/M1独立監査と旧M3 torn-WAL assessment/mechanism2は未完走であり、部分結果を合格に転用しない。実鍵・host user・security policy・deploy・公開設定はこのTODO整理では変更しない。TypeScript client、explorer/wallet、Ledger、Unique Asset、multisig、contract upgrade/irreversible relinquishment/atomic migration、ZK、cross-domain atomicity、追加provider/HA/scaleなど未実装・未検証の機能を完了済みと広告しない。全機能の対象から勝手に外さず、必要な実装と元の条件を追う。
 
 [historical-todo]: https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/TODO.md
 [historical-m2]: https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/TODO.md#m2初期リリース対象の照合-2026-11-03

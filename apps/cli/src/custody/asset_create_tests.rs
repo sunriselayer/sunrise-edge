@@ -8,17 +8,19 @@ use super::{
     config::CustodyConfig,
     error::CustodyError,
     fsperm::test_support::{TempDir, write_mode_file},
-    server,
+    generic_paid, server,
     wire::CustodyResponseStatus,
 };
+use crate::test_support::{FakeTransport, query_ok};
 use objects::{Object, Owner};
 use runtime::{
-    DurableOperationContext, MemoryBlobStore, MemoryDurableStateStore, StorageCorrelationId,
-    StorageDeadline, WriterFenceGeneration,
+    DurableObjectVersion, DurableOperationContext, MemoryBlobStore, MemoryDurableStateStore,
+    ObjectHeadRevision, StorageCorrelationId, StorageDeadline, WriterFenceGeneration,
 };
 use sunrise_edge_client::{
-    Address, ChainId, Digest32, Epoch, LocalSigner, ObjectEffect, ObjectId, PublicationContext,
-    RequestId, VerifiedGenesisRoot,
+    Address, ChainId, Client, Digest32, Epoch, HttpContextQueryResult, HttpObjectQueryResult,
+    LocalSigner, ObjectEffect, ObjectId, PublicationContext, RequestId, VerifiedGenesisRoot,
+    encode_paid_fee_policy,
 };
 
 struct Fixture {
@@ -175,6 +177,197 @@ fn create_renders_review_and_derives_a_fresh_instance_distinct_from_genesis() {
     );
     assert!(prepared.review.contains("initial_supply=0"));
     assert!(prepared.review.contains("entrypoint=init"));
+}
+
+#[test]
+fn generic_paid_offline_signing_requires_an_exact_live_approval() {
+    let fixture = Fixture::new();
+    let approvals_dir = TempDir::new(approvals::APPROVALS_DIR_MODE);
+    let request_id = fixture.create_request.request_id;
+    let prepare = || {
+        fixture
+            .trust()
+            .prepare_create(&fixture.create_request)
+            .unwrap()
+            .prepared
+    };
+    assert!(
+        generic_paid::sign_approved(
+            &fixture.signer,
+            &fixture.config,
+            &approvals_dir.0,
+            &request_id,
+            prepare()
+        )
+        .is_err()
+    );
+    let frame = prepare().signable_frame().to_vec();
+    approvals::write_approval(
+        &approvals_dir.0,
+        &request_id,
+        &ApprovalRecord {
+            publisher: fixture.config.publisher(),
+            not_after_unix_seconds: u64::MAX,
+            frame,
+        },
+    )
+    .unwrap();
+    let signed = generic_paid::sign_approved(
+        &fixture.signer,
+        &fixture.config,
+        &approvals_dir.0,
+        &request_id,
+        prepare(),
+    )
+    .unwrap();
+    assert_eq!(signed.intent.request_id, *request_id.as_bytes());
+    let independently_verified = prepare().finalize(signed.signature.to_vec()).unwrap();
+    assert_eq!(independently_verified, signed);
+
+    let mut changed_request = fixture.create_request.clone();
+    changed_request.max_fee += 1;
+    let changed = fixture
+        .trust()
+        .prepare_create(&changed_request)
+        .unwrap()
+        .prepared;
+    assert!(
+        generic_paid::sign_approved(
+            &fixture.signer,
+            &fixture.config,
+            &approvals_dir.0,
+            &request_id,
+            changed
+        )
+        .is_err()
+    );
+    super::revoke::revoke(&approvals_dir.0, &request_id).unwrap();
+    assert!(
+        generic_paid::sign_approved(
+            &fixture.signer,
+            &fixture.config,
+            &approvals_dir.0,
+            &request_id,
+            prepare()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn generic_paid_prepare_rechecks_pinned_policy_and_current_source() {
+    let fixture = Fixture::new();
+    let prepared = fixture
+        .trust()
+        .prepare_create(&fixture.create_request)
+        .unwrap()
+        .prepared;
+    let expected = fixture.config.expected_context().unwrap();
+    let request = execution::paid_execution::encode_paid_intent(prepared.intent()).unwrap();
+    let policy = encode_paid_fee_policy(&fixture.manifest.fee_policy).unwrap();
+    let context_bytes = HttpContextQueryResult::new(
+        expected.chain_id().clone(),
+        expected.protocol_version(),
+        expected.epoch(),
+        expected.hash_suite_id(),
+        2,
+        1,
+        2,
+        expected.domain(),
+        vec![1],
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    let fee = objects::decode_object(&fixture.create_request.fee_bytes).unwrap();
+    let source = &prepared.intent().consent.source;
+    let current = HttpObjectQueryResult::CurrentInline {
+        object_id: source.id,
+        head_revision: ObjectHeadRevision::new(1).unwrap(),
+        object_version: DurableObjectVersion::new(source.version).unwrap(),
+        digest: source.digest,
+        creating_chain_id: expected.chain_id().clone(),
+        creating_protocol_version: expected.protocol_version(),
+        canonical_object_bytes: objects::encode_object(&fee).unwrap(),
+    }
+    .encode()
+    .unwrap();
+    let client = Client::new(FakeTransport::new(vec![
+        query_ok(context_bytes.clone()),
+        query_ok(policy.clone()),
+        query_ok(current),
+    ]));
+    let (_, review, request_id) = generic_paid::prepare(
+        &client,
+        &fixture.config,
+        &fixture.resolver,
+        &expected,
+        &policy,
+        &request,
+    )
+    .unwrap();
+    assert_eq!(request_id, fixture.create_request.request_id);
+    assert_eq!(review.intent_bytes(), request);
+    assert_eq!(client.transport().requests().len(), 3);
+
+    let mut changed_policy = fixture.manifest.fee_policy.clone();
+    changed_policy.gas_schedule.base_fee += 1;
+    let client = Client::new(FakeTransport::new(vec![
+        query_ok(context_bytes.clone()),
+        query_ok(encode_paid_fee_policy(&changed_policy).unwrap()),
+    ]));
+    assert!(
+        generic_paid::prepare(
+            &client,
+            &fixture.config,
+            &fixture.resolver,
+            &expected,
+            &policy,
+            &request,
+        )
+        .is_err()
+    );
+    assert_eq!(client.transport().requests().len(), 2);
+
+    let client = Client::new(FakeTransport::new(vec![
+        query_ok(context_bytes),
+        query_ok(policy.clone()),
+        query_ok(
+            HttpObjectQueryResult::Absent {
+                object_id: source.id,
+            }
+            .encode()
+            .unwrap(),
+        ),
+    ]));
+    assert!(
+        generic_paid::prepare(
+            &client,
+            &fixture.config,
+            &fixture.resolver,
+            &expected,
+            &policy,
+            &request,
+        )
+        .is_err()
+    );
+    assert_eq!(client.transport().requests().len(), 3);
+
+    let mut malformed = request;
+    malformed.push(0);
+    let client = Client::new(FakeTransport::new(vec![]));
+    assert!(
+        generic_paid::prepare(
+            &client,
+            &fixture.config,
+            &fixture.resolver,
+            &expected,
+            &policy,
+            &malformed,
+        )
+        .is_err()
+    );
+    assert!(client.transport().requests().is_empty());
 }
 
 /// Reusing the *exact same seed bytes* as the pinned genesis fee instance
