@@ -14,7 +14,7 @@ Current work, validation, and release gates belong in [TODO.md](../../TODO.md).
 | Stores, snapshots, recovery | [Persistence](persistence.md) | [Operator persistence](../operations/persistence.md) |
 | Generic contracts and Standard Asset | [Generic contracts](generic-contracts.md) | [Smart contracts](../smartcontract/README.md) |
 | First Seal, import, serving, recurring links | [Handoff contracts](first-successor-serving.md) | [Recurring successor](recurring-successor-serving.md), [Seal](ordered-seal.md) |
-| Signing, review, custody | [Signing preparation](signing-preparation.md) | [Original bond protected signing](original-bond-protected-signing.md), [protocol custody](local-protocol-custody.md) |
+| Signing, review, custody | [Signing preparation](signing-preparation.md) | [Generic paid custody handoff](../guides/generic-paid-custody.md), [original bond protected signing](original-bond-protected-signing.md), [protocol custody](local-protocol-custody.md) |
 | Native release and validation | [Release handoff](native-release-handoff.md) | [Validation profiles](repository-validation.md) |
 | Product and operator flows | [Product surfaces](product-surfaces.md) | [Operator guides](../README.md) |
 
@@ -23,6 +23,8 @@ owner. [Signing preparation](signing-preparation.md) distinguishes the selected
 role-specific boundaries from mechanical signature preparation; the
 [ZeroShare fee-claim custody](fee-claim-custody.md) describes its selected
 successor-only profile, while the
+[recognized FinalTransfer custody](final-fee-transfer-custody.md) describes its
+separate two-phase protected fee release, and the
 [original bond contract](original-bond-protected-signing.md) gives its narrower
 development profile. Source-specific evidence and release qualification belong
 in TODO. Historical alternatives remain in the [catalog](catalog.md),

@@ -81,6 +81,27 @@ fn prepared_local_and_general_execution_preserve_independent_signed_bytes() {
         .unwrap();
         assert_eq!(prepared.signable_frame(), frame);
         assert_eq!(prepared.scopes()[0].instance, instance);
+        let review = LocalExecutionReview::build(&prepared).unwrap();
+        assert_eq!(review.signable_frame(), frame);
+        assert_eq!(
+            review.intent_bytes(),
+            encode_local_execution_intent(prepared.intent()).unwrap()
+        );
+        assert!(review.display().contains("chain_id=local-client-test\n"));
+        assert!(
+            review
+                .display()
+                .contains(&format!("policy.profile={profile}\n"))
+        );
+        assert!(
+            review
+                .display()
+                .contains("code.chain_id=local-client-test\n")
+        );
+        assert!(review.display().contains("scope[0].initializer=init\n"));
+        assert!(review.display().contains("arguments.opaque_hex="));
+        assert!(review.display().contains("scope[0].code_node[0].digest="));
+        assert!(review.display().len() <= local_execution_review::MAX_LOCAL_EXECUTION_REVIEW_BYTES);
         let external: TestSigner = TestSigner::new([7; 32], Behavior::Valid);
         let actual = prepared.sign_and_finalize_external(&external).unwrap();
         assert_eq!(external.calls(), 1);
@@ -118,6 +139,51 @@ fn prepared_local_and_general_execution_preserve_independent_signed_bytes() {
             );
         }
     }
+}
+
+#[test]
+fn general_review_names_each_signed_authorization_and_scope() {
+    use call_authorization::{CallAuthorization, ExecutionTarget};
+
+    let (resolver, signer, interface, instance, mut call) = fixture_profile(3, 4);
+    call.entrypoint = "run".to_owned();
+    let target = ExecutionTarget {
+        instance: call.instance.clone(),
+        code: call.code.clone(),
+    };
+    let authorization = CallAuthorization {
+        caller: target.clone(),
+        callee: target,
+        entrypoint: "run".to_owned(),
+        type_arguments: vec![],
+        objects: vec![],
+    };
+    let policy = LocalExecutionPolicy::general(call.context.clone());
+    let scopes = [ResolvedExecutionScope {
+        instance: instance.clone(),
+        target: instance_target(&resolver, &instance).unwrap(),
+        interface,
+    }];
+    let prepared = PreparedLocalExecution::prepare(
+        signer.address(),
+        &resolver,
+        &expected(),
+        &policy,
+        LocalExecutionMode::Call,
+        call,
+        vec![authorization],
+        &scopes,
+    )
+    .unwrap();
+    let review = LocalExecutionReview::build(&prepared).unwrap();
+    let display = review.display();
+    assert!(display.contains("authorization_count=1\n"));
+    assert!(display.contains("authorization[0].entrypoint=run\n"));
+    assert!(display.contains("authorization[0].caller.code.chain_id=local-client-test\n"));
+    assert!(display.contains("authorization[0].callee.instance.record_digest="));
+    assert!(display.contains("scope_count=1\n"));
+    assert!(!display.contains("\nauthorization.entrypoint="));
+    assert_eq!(review.signable_frame(), prepared.signable_frame());
 }
 
 #[test]

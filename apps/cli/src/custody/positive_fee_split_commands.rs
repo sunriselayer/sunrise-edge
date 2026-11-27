@@ -96,6 +96,17 @@ fn display(content: &super::positive_fee_split_approvals::Content) -> Result<(),
 }
 
 pub(super) fn prepare_leg<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    prepare_leg_with_phase(args, Phase::Leg)
+}
+
+pub(super) fn prepare_final_leg<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    prepare_leg_with_phase(args, Phase::FinalLeg)
+}
+
+fn prepare_leg_with_phase<I: IntoIterator<Item = OsString>>(
+    args: I,
+    phase: Phase,
+) -> Result<(), CliError> {
     let mut flags: Vec<FlagSpec> = trust_flags();
     for name in [
         "--fee-object",
@@ -124,7 +135,7 @@ pub(super) fn prepare_leg<I: IntoIterator<Item = OsString>>(args: I) -> Result<(
     {
         return Err(CustodyError::PositiveSplitRejected.into());
     }
-    let request: Request = Request::Leg(LegRequest {
+    let leg: LegRequest = LegRequest {
         terms: PositiveSplitTerms {
             escrow_request_id: decode_hex_32(
                 "--escrow-request-id",
@@ -150,7 +161,12 @@ pub(super) fn prepare_leg<I: IntoIterator<Item = OsString>>(args: I) -> Result<(
                 parsed.require("--fee-object-hash-epoch")?,
             )?),
         },
-    });
+    };
+    let request: Request = match phase {
+        Phase::Leg => Request::Leg(leg),
+        Phase::FinalLeg => Request::FinalLeg(leg),
+        Phase::Claim | Phase::FinalClaim => return Err(CustodyError::PositiveSplitRejected.into()),
+    };
     let prepared: policy::Prepared<'_> = trust.prepare(&request)?;
     display(&prepared.content)?;
     super::write_review_preimage(output, &wire::encode(&request).map_err(CustodyError::Wire)?)?;
@@ -158,6 +174,19 @@ pub(super) fn prepare_leg<I: IntoIterator<Item = OsString>>(args: I) -> Result<(
 }
 
 pub(super) fn prepare_claim<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    prepare_claim_with_phase(args, Phase::Claim)
+}
+
+pub(super) fn prepare_final_claim<I: IntoIterator<Item = OsString>>(
+    args: I,
+) -> Result<(), CliError> {
+    prepare_claim_with_phase(args, Phase::FinalClaim)
+}
+
+fn prepare_claim_with_phase<I: IntoIterator<Item = OsString>>(
+    args: I,
+    phase: Phase,
+) -> Result<(), CliError> {
     let mut flags: Vec<FlagSpec> = trust_flags();
     for name in [
         "--request",
@@ -173,23 +202,43 @@ pub(super) fn prepare_claim<I: IntoIterator<Item = OsString>>(args: I) -> Result
     super::check_review_preimage_destination(output)?;
     let config: CustodyConfig = CustodyConfig::load(Path::new(parsed.require("--config")?))?;
     let trust: PositiveFeeSplitTrust = load_trust(&parsed, schedules, &config)?;
-    let Request::Leg(leg) = read_request(&parsed, Phase::Leg)? else {
-        return Err(CustodyError::PositiveSplitRejected.into());
+    let leg: LegRequest = match phase {
+        Phase::Claim => match read_request(&parsed, Phase::Leg)? {
+            Request::Leg(leg) => leg,
+            _ => return Err(CustodyError::PositiveSplitRejected.into()),
+        },
+        Phase::FinalClaim => match read_request(&parsed, Phase::FinalLeg)? {
+            Request::FinalLeg(leg) => leg,
+            _ => return Err(CustodyError::PositiveSplitRejected.into()),
+        },
+        Phase::Leg | Phase::FinalLeg => return Err(CustodyError::PositiveSplitRejected.into()),
     };
-    let request: Request = Request::Claim {
-        leg,
-        signed_leg: read(
-            parsed.require("--signed-leg")?,
-            sunrise_edge_client::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES,
-        )?,
-        request: read(
-            parsed.require("--host-request")?,
-            sunrise_edge_client::MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
-        )?,
-        intent: read(
-            parsed.require("--host-intent")?,
-            sunrise_edge_client::MAX_FEE_CLAIM_INTENT_BYTES,
-        )?,
+    let signed_leg: Vec<u8> = read(
+        parsed.require("--signed-leg")?,
+        sunrise_edge_client::local_execution::MAX_LOCAL_EXECUTION_INTENT_BYTES,
+    )?;
+    let saved_request: Vec<u8> = read(
+        parsed.require("--host-request")?,
+        sunrise_edge_client::MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES,
+    )?;
+    let intent: Vec<u8> = read(
+        parsed.require("--host-intent")?,
+        sunrise_edge_client::MAX_FEE_CLAIM_INTENT_BYTES,
+    )?;
+    let request: Request = match phase {
+        Phase::Claim => Request::Claim {
+            leg,
+            signed_leg,
+            request: saved_request,
+            intent,
+        },
+        Phase::FinalClaim => Request::FinalClaim {
+            leg,
+            signed_leg,
+            request: saved_request,
+            intent,
+        },
+        Phase::Leg | Phase::FinalLeg => return Err(CustodyError::PositiveSplitRejected.into()),
     };
     let prepared: policy::Prepared<'_> = trust.prepare(&request)?;
     display(&prepared.content)?;
@@ -229,8 +278,13 @@ pub(super) fn approve<I: IntoIterator<Item = OsString>>(
         return Err(CustodyError::ApproveRequiresTerminal.into());
     }
     display(&prepared.content)?;
+    let family: &str = if matches!(phase, Phase::FinalLeg | Phase::FinalClaim) {
+        "FINAL-FEE-TRANSFER"
+    } else {
+        "POSITIVE-FEE-SPLIT"
+    };
     let confirmation: String = format!(
-        "APPROVE-POSITIVE-FEE-SPLIT phase={phase:?} request={} claimant={} not_after={not_after}",
+        "APPROVE-{family} phase={phase:?} request={} claimant={} not_after={not_after}",
         prepared.content.request_id, prepared.content.claimant
     );
     println!("Type exactly to approve:\n{confirmation}");
@@ -249,12 +303,7 @@ pub(super) fn sign<I: IntoIterator<Item = OsString>>(
     args: I,
     phase: Phase,
 ) -> Result<(), CliError> {
-    let mut flags: Vec<FlagSpec> = trust_flags();
-    flags.extend([scalar("--request"), scalar("--out")]);
-    if phase == Phase::Claim {
-        flags.push(scalar("--created-checkpoint"));
-    }
-    flags.extend(crate::signer::signer_flag_specs());
+    let flags: Vec<FlagSpec> = sign_flags(phase);
     let (parsed, schedules) = parse(args, &flags)?;
     let crate::signer::SignerSelection::Custody {
         socket,
@@ -264,7 +313,7 @@ pub(super) fn sign<I: IntoIterator<Item = OsString>>(
     else {
         return Err(CustodyError::PositiveSplitRejected.into());
     };
-    let checkpoint: Option<u64> = if phase == Phase::Claim {
+    let checkpoint: Option<u64> = if matches!(phase, Phase::Claim | Phase::FinalClaim) {
         Some(parse_u64(
             "--created-checkpoint",
             parsed.require("--created-checkpoint")?,
@@ -287,8 +336,7 @@ pub(super) fn sign<I: IntoIterator<Item = OsString>>(
         custody_uid,
         expected_public_key,
     };
-    let signature: [u8; 64] =
-        super::client::request_positive_fee_split_signature(&target, &request)?;
+    let signature: [u8; 64] = super::client::request_fee_release_signature(&target, &request)?;
     let signed: Vec<u8> = prepared.finalize(signature.to_vec())?;
     let bytes: Vec<u8> = if let Some(checkpoint) = checkpoint {
         trust.candidate(id, signed, checkpoint)?
@@ -299,7 +347,28 @@ pub(super) fn sign<I: IntoIterator<Item = OsString>>(
     Ok(())
 }
 
+fn sign_flags(phase: Phase) -> Vec<FlagSpec> {
+    let mut flags: Vec<FlagSpec> = trust_flags();
+    flags.extend([scalar("--request"), scalar("--out")]);
+    if matches!(phase, Phase::Claim | Phase::FinalClaim) {
+        flags.push(scalar("--created-checkpoint"));
+    }
+    flags.extend(crate::signer::signer_flag_specs());
+    flags
+}
+
 pub(super) fn serve<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    serve_with_family(args, false)
+}
+
+pub(super) fn serve_final<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), CliError> {
+    serve_with_family(args, true)
+}
+
+fn serve_with_family<I: IntoIterator<Item = OsString>>(
+    args: I,
+    final_transfer: bool,
+) -> Result<(), CliError> {
     let mut flags: Vec<FlagSpec> = trust_flags();
     for name in [
         "--key-file",
@@ -325,14 +394,13 @@ pub(super) fn serve<I: IntoIterator<Item = OsString>>(args: I) -> Result<(), Cli
     // Trust and historical identity are verified before any private key is loaded.
     let signer: sunrise_edge_client::LocalSigner =
         super::keyfile::load_signer(Path::new(parsed.require("--key-file")?))?;
-    let summary: super::server::ServeSummary = super::server::run_positive_fee_split(
-        config,
-        signer,
-        Path::new(parsed.require("--socket")?),
-        Path::new(parsed.require("--approvals-dir")?),
-        bounds,
-        trust,
-    )?;
+    let socket: &Path = Path::new(parsed.require("--socket")?);
+    let approvals: &Path = Path::new(parsed.require("--approvals-dir")?);
+    let summary: super::server::ServeSummary = if final_transfer {
+        super::server::run_final_fee_transfer(config, signer, socket, approvals, bounds, trust)?
+    } else {
+        super::server::run_positive_fee_split(config, signer, socket, approvals, bounds, trust)?
+    };
     println!(
         "connections_accepted={}\nrequests_handled={}\nrequests_signed={}\nrequests_refused={}",
         summary.connections_accepted,
@@ -354,4 +422,18 @@ pub(super) fn fixture_trust(args: Vec<OsString>, expected_config: &Path) -> Posi
     );
     let config: CustodyConfig = CustodyConfig::load(expected_config).unwrap();
     load_trust(&parsed, schedules, &config).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn final_claim_sign_parser_accepts_required_checkpoint() {
+        let args = [OsString::from("--created-checkpoint"), OsString::from("42")];
+        assert!(parse(args.clone(), &sign_flags(Phase::Claim)).is_ok());
+        assert!(parse(args.clone(), &sign_flags(Phase::FinalClaim)).is_ok());
+        assert!(parse(args.clone(), &sign_flags(Phase::Leg)).is_err());
+        assert!(parse(args, &sign_flags(Phase::FinalLeg)).is_err());
+    }
 }

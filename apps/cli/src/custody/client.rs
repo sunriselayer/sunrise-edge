@@ -246,8 +246,9 @@ pub(super) async fn request_signature_async(
     }
 }
 
-/// A closed positive-Split request. This endpoint never implements ExternalSigner.
-pub(super) fn request_positive_fee_split_signature(
+/// A closed recognized fee-release request. The selected worker checks its
+/// Split or FinalTransfer phase family; neither is a generic frame signer.
+pub(super) fn request_fee_release_signature(
     target: &CustodyTarget,
     request: &super::positive_fee_split_wire::Request,
 ) -> Result<[u8; wire::CUSTODY_SIGNATURE_BYTES], CustodyError> {

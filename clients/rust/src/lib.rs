@@ -68,11 +68,13 @@ pub mod fee_claim_review;
 pub mod immutable_archive;
 pub mod key;
 pub mod local_execution_client;
+pub mod local_execution_review;
 mod local_genesis;
 pub mod ordered_economics_client;
 pub mod ordered_history_archive;
 pub mod ordered_history_client;
 pub mod paid_execution_client;
+pub mod paid_execution_review;
 pub mod publication_client;
 pub mod publication_review;
 mod review_presentation;
@@ -127,6 +129,7 @@ pub use key::LocalSigner;
 pub use local_execution_client::{
     PreparedLocalExecution, build_signed_general_execution, build_signed_local_execution,
 };
+pub use local_execution_review::{LocalExecutionReview, LocalExecutionReviewError};
 pub use local_genesis::{GenesisTrustError, load_verified_genesis_root};
 pub use node_core::genesis::{GenesisCommitteeError, GenesisRootError, VerifiedGenesisRoot};
 // Offline artifact consumers use the same certificate verifier as the network
@@ -173,6 +176,9 @@ pub use node_wire::{
 };
 pub use paid_execution_client::{
     PAID_EXECUTION_PATH, PAID_FEE_POLICY_PATH, PreparedPaidExecution, build_signed_paid_execution,
+};
+pub use paid_execution_review::{
+    MAX_PAID_REVIEW_BYTES, PaidExecutionReview, PaidExecutionReviewError,
 };
 pub use protocol_types::{HashSuite, HashSuiteSchedule};
 pub use publication_client::{

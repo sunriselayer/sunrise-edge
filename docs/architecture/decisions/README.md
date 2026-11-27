@@ -190,6 +190,7 @@ use the [short architecture index](../README.md) to find the relevant owner and
 - [DR-0293: bounded consensus observer retention and certified-body recovery](0293-bounded-consensus-observer-retention.md)
 - [DR-0294: bounded quorum-certificate retention](0294-bounded-quorum-certificate-retention.md)
 - [DR-0296: certified preinstalled SubmitTransaction admission](0296-certified-preinstalled-submit-transaction.md)
+- [DR-0297: recognized final fee-transfer custody](0297-recognized-final-fee-transfer-custody.md)
 
 The replaced proposals [DR-0177](https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/docs/architecture/decisions/0177-conditional-readiness-and-ordered-seal.md)
 and [DR-0186](https://github.com/sunriselayer/sunrise-edge/blob/eb79768ba9806220576f3abe4e344b75b19390fe/docs/architecture/decisions/0186-functional-handoff-closure.md)

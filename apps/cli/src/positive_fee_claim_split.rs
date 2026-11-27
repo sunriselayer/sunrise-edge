@@ -1,9 +1,10 @@
-//! Immutable recognized Standard Asset positive-Split proposals (DR-0267).
+//! Immutable recognized Standard Asset fee-release proposals (DR-0267/0297).
 //!
 //! No key, approval, IPC, network, state mutation or currentness authority lives
-//! here. Two separate retained owners prepare the recognized local leg and then
-//! its exact outer fee claim. A future protected consumer must handle BOTH key
-//! uses; protecting only the outer claim does not isolate the historical key.
+//! here. Separate retained owners prepare the strict-partial Split or full-Coin
+//! FinalTransfer local leg and then its exact outer fee claim. The protected
+//! consumer must handle BOTH key uses; protecting only the outer claim does not
+//! isolate the historical key.
 
 use protocol_types::HashPurpose;
 use std::{error::Error, fmt};
@@ -53,7 +54,7 @@ pub enum PositiveSplitError {
 }
 impl fmt::Display for PositiveSplitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "positive Split proposal refused: {self:?}")
+        write!(f, "recognized fee-release proposal refused: {self:?}")
     }
 }
 impl Error for PositiveSplitError {}
@@ -293,6 +294,7 @@ impl<'a> StandardAssetPositiveSplitPolicy<'a> {
             self.claimant,
             &terms,
             &object,
+            RecognizedLegKind::StrictSplit,
         )?;
         let review: PositiveSplitMeaning = PositiveSplitMeaning::build(
             self.claimant,
@@ -314,6 +316,12 @@ impl<'a> StandardAssetPositiveSplitPolicy<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum RecognizedLegKind {
+    StrictSplit,
+    FinalTransfer,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_recognized_leg(
     known: &KnownStandardAsset,
@@ -323,6 +331,7 @@ fn prepare_recognized_leg(
     claimant: HistoricalClaimantPin,
     terms: &PositiveSplitTerms,
     retained: &RetainedFeeObject,
+    kind: RecognizedLegKind,
 ) -> Result<PreparedLocalExecution, PositiveSplitError> {
     if retained.canonical_bytes.len() > MAX_AUTHENTICATED_OBJECT_BODY_BYTES
         || retained.hash_epoch > context.epoch()
@@ -374,7 +383,12 @@ fn prepare_recognized_leg(
     }
     let held: u64 = public_standard_asset::coin_amount(&object.data)
         .map_err(|_| PositiveSplitError::Content)?;
-    if terms.amount == 0 || terms.amount >= held {
+    if terms.amount == 0
+        || match kind {
+            RecognizedLegKind::StrictSplit => terms.amount >= held,
+            RecognizedLegKind::FinalTransfer => terms.amount != held,
+        }
+    {
         return Err(PositiveSplitError::Content);
     }
     let policy: LocalExecutionPolicy =
@@ -400,7 +414,11 @@ fn prepare_recognized_leg(
         nonce: terms.nonce,
         code: known.code.clone(),
         instance: known.scope.target.clone(),
-        entrypoint: "split".into(),
+        entrypoint: match kind {
+            RecognizedLegKind::StrictSplit => "split",
+            RecognizedLegKind::FinalTransfer => "transfer",
+        }
+        .into(),
         type_arguments: known.coin.args().to_vec(),
         access: AccessManifest {
             entries: vec![AccessEntry {
@@ -408,8 +426,15 @@ fn prepare_recognized_leg(
                 mode: AccessMode::Write,
             }],
         },
-        arguments: public_standard_asset::split_arguments(terms.amount, terms.recipient.as_bytes())
-            .map_err(|_| PositiveSplitError::Content)?,
+        arguments: match kind {
+            RecognizedLegKind::StrictSplit => {
+                public_standard_asset::split_arguments(terms.amount, terms.recipient.as_bytes())
+            }
+            RecognizedLegKind::FinalTransfer => {
+                public_standard_asset::transfer_arguments(terms.recipient.as_bytes())
+            }
+        }
+        .map_err(|_| PositiveSplitError::Content)?,
         gas_limit: terms.gas_limit,
     };
     PreparedLocalExecution::prepare(
@@ -729,5 +754,315 @@ impl PreparedPositiveSplitClaim<'_> {
     }
 }
 
+/// A separate closed proposal for releasing the entire recognized fee Coin.
+/// This does not extend the strict-partial Split profile or its wire family.
+#[derive(Clone)]
+pub struct StandardAssetFinalTransferPolicy<'a> {
+    inner: StandardAssetPositiveSplitPolicy<'a>,
+}
+
+impl<'a> StandardAssetFinalTransferPolicy<'a> {
+    /// Pins the same verified historical claimant and original Standard Asset.
+    pub fn new(
+        workflow: &'a SuccessorWorkflowAuthority,
+        claimant: HistoricalClaimantPin,
+    ) -> Result<Self, PositiveSplitError> {
+        Ok(Self {
+            inner: StandardAssetPositiveSplitPolicy::new(workflow, claimant)?,
+        })
+    }
+
+    /// Constructs only a full-balance transfer of the retained fee Coin.
+    pub fn prepare_leg(
+        &self,
+        terms: PositiveSplitTerms,
+        object: RetainedFeeObject,
+    ) -> Result<PreparedFinalTransferLeg<'a>, PositiveSplitError> {
+        self.inner
+            .workflow
+            .require_signing_context(self.inner.workflow.expected_context())
+            .map_err(|_| PositiveSplitError::Authority)?;
+        let prepared: PreparedLocalExecution = prepare_recognized_leg(
+            &self.inner.known,
+            self.inner.workflow.ordered_policy().resolver(),
+            self.inner.workflow.expected_context(),
+            self.inner.workflow.ordered_policy().domain(),
+            self.inner.claimant,
+            &terms,
+            &object,
+            RecognizedLegKind::FinalTransfer,
+        )?;
+        let review: FinalTransferMeaning = FinalTransferMeaning::build(
+            self.inner.claimant,
+            self.inner.workflow.expected_context().clone(),
+            self.inner.workflow.genesis_root().digest(),
+            self.inner.workflow.ordered_policy().anchor(),
+            &self.inner.known,
+            &terms,
+            &object,
+            prepared.signable_frame(),
+        )?;
+        Ok(PreparedFinalTransferLeg {
+            policy: self.clone(),
+            terms,
+            object,
+            prepared,
+            review,
+        })
+    }
+}
+
+/// Exact local meaning conditional on the retained object being current.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FinalTransferMeaning {
+    text: String,
+}
+
+impl FinalTransferMeaning {
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        claimant: HistoricalClaimantPin,
+        context: PublicationContext,
+        genesis: Digest32,
+        anchor: Digest32,
+        known: &KnownStandardAsset,
+        terms: &PositiveSplitTerms,
+        object: &RetainedFeeObject,
+        frame: &[u8],
+    ) -> Result<Self, PositiveSplitError> {
+        if !context
+            .chain_id()
+            .as_str()
+            .bytes()
+            .all(|byte| (0x20..=0x7e).contains(&byte))
+            || frame.len() > MAX_POSITIVE_SPLIT_REVIEW_BYTES / 8
+        {
+            return Err(PositiveSplitError::Review);
+        }
+        let coin: Object =
+            decode_object(&object.canonical_bytes).map_err(|_| PositiveSplitError::Canonical)?;
+        let held: u64 = public_standard_asset::coin_amount(&coin.data)
+            .map_err(|_| PositiveSplitError::Content)?;
+        if held != terms.amount {
+            return Err(PositiveSplitError::Content);
+        }
+        let text = format!(
+            concat!(
+                "review_kind=recognized_standard_asset_final_transfer_proposal\n",
+                "claim_entitlement=not_proven\nescrow_and_nonce_freshness=not_proven\n",
+                "chain_id={}\nprotocol_version={}\nexecution_epoch={}\ncertificate_epoch={}\n",
+                "genesis_digest={}\nordered_anchor={}\nvalidator={}\nclaimant={}\n",
+                "resource_domain={}\nresource={}\ncode_artifact={}\ncode_revision={}\n",
+                "code_origin_publisher={}\ncode_origin_seed={}\nresource_epoch={}\n",
+                "instance_creator={}\ninstance_seed={}\nentrypoint=transfer\n",
+                "escrow_request={}\nrequest={}\nfee_object={}\nfee_version={}\nfee_digest={}\n",
+                "asserted_object_hash_epoch={}\nfee_schema={}\nfee_type_hash={}\nowner_kind=fee_escrow\n",
+                "mode=call\nexecution_profile=4\naccess=one_exact_write\nauthorizations=none\n",
+                "retained_balance={}\nrelease_amount={}\nretained_remainder=0\nrecipient={}\n",
+                "nonce={}\ngas_limit={}\nleg_frame={}\n"
+            ),
+            context.chain_id(),
+            context.protocol_version().get(),
+            context.epoch().get(),
+            claimant.certificate_epoch.get(),
+            genesis,
+            anchor,
+            claimant.validator,
+            claimant.public_key,
+            public_standard_asset::ASSET_OPAQUE_DOMAIN,
+            known.asset,
+            known.code.artifact_digest(),
+            known.code.revision(),
+            crate::hex::encode_hex(known.code.origin().publisher()),
+            crate::hex::encode_hex(known.code.origin().seed()),
+            known.context.epoch().get(),
+            crate::hex::encode_hex(&known.scope.target.creator),
+            crate::hex::encode_hex(&known.scope.target.seed),
+            crate::hex::encode_hex(&terms.escrow_request_id),
+            crate::hex::encode_hex(&terms.request_id),
+            object.reference.id,
+            object.reference.version,
+            object.reference.digest,
+            object.hash_epoch.get(),
+            coin.schema_version,
+            coin.type_hash,
+            held,
+            terms.amount,
+            terms.recipient,
+            terms.nonce,
+            terms.gas_limit,
+            crate::hex::encode_hex(frame),
+        );
+        if text.len() > MAX_POSITIVE_SPLIT_REVIEW_BYTES / 2 {
+            return Err(PositiveSplitError::Review);
+        }
+        Ok(Self { text })
+    }
+
+    /// Complete bounded recognized meaning and exact signable leg frame.
+    #[must_use]
+    pub fn render_text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// First immutable FinalTransfer stage; no key or approval is held here.
+pub struct PreparedFinalTransferLeg<'a> {
+    policy: StandardAssetFinalTransferPolicy<'a>,
+    terms: PositiveSplitTerms,
+    object: RetainedFeeObject,
+    prepared: PreparedLocalExecution,
+    review: FinalTransferMeaning,
+}
+
+impl<'a> PreparedFinalTransferLeg<'a> {
+    /// Exact SDK-derived frame; no caller-selected bytes are accepted.
+    #[must_use]
+    pub fn signable_frame(&self) -> &[u8] {
+        self.prepared.signable_frame()
+    }
+
+    /// Full-balance transfer meaning under the retained object preimage.
+    #[must_use]
+    pub fn review(&self) -> &FinalTransferMeaning {
+        &self.review
+    }
+
+    /// Verifies the historical claimant signature and retains canonical bytes.
+    pub fn finalize(
+        self,
+        signature: Vec<u8>,
+    ) -> Result<SignedFinalTransferLeg<'a>, PositiveSplitError> {
+        let signed: SignedLocalExecutionIntent = self
+            .prepared
+            .finalize(signature)
+            .map_err(|_| PositiveSplitError::Canonical)?;
+        let bytes: Vec<u8> =
+            encode_signed_local_execution(&signed).map_err(|_| PositiveSplitError::Canonical)?;
+        Ok(SignedFinalTransferLeg {
+            policy: self.policy,
+            terms: self.terms,
+            object: self.object,
+            review: self.review,
+            bytes,
+        })
+    }
+}
+
+/// Authenticated exact transfer leg retained before host-prepared outer review.
+pub struct SignedFinalTransferLeg<'a> {
+    policy: StandardAssetFinalTransferPolicy<'a>,
+    terms: PositiveSplitTerms,
+    object: RetainedFeeObject,
+    review: FinalTransferMeaning,
+    bytes: Vec<u8>,
+}
+
+impl<'a> SignedFinalTransferLeg<'a> {
+    /// Canonical signed local transfer leg.
+    #[must_use]
+    pub fn canonical_signed_leg(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Exact selectors and signed leg for the existing seed-free host request.
+    #[must_use]
+    pub fn request(&self) -> FeeClaimPrepareRequest {
+        FeeClaimPrepareRequest {
+            context: self.policy.inner.workflow.expected_context().clone(),
+            escrow_request_id: self.terms.escrow_request_id,
+            request_id: self.terms.request_id,
+            validator_id: self.policy.inner.claimant.validator,
+            claimant_public_key: *self.policy.inner.claimant.public_key.as_bytes(),
+            recipient: self.terms.recipient,
+            signed_leg: Some(self.bytes.clone()),
+        }
+    }
+
+    /// Rechecks the complete saved host proposal against both retained owners.
+    pub fn prepare_claim(
+        self,
+        request_bytes: &[u8],
+        intent_bytes: &[u8],
+    ) -> Result<PreparedFinalTransferClaim<'a>, PositiveSplitError> {
+        if request_bytes.len() > MAX_FEE_CLAIM_PREPARE_REQUEST_BYTES
+            || intent_bytes.len() > MAX_FEE_CLAIM_INTENT_BYTES
+        {
+            return Err(PositiveSplitError::Canonical);
+        }
+        let request: FeeClaimPrepareRequest = FeeClaimPrepareRequest::decode(request_bytes)
+            .map_err(|_| PositiveSplitError::Canonical)?;
+        let intent: FeeClaimIntent =
+            decode_fee_claim_intent(intent_bytes).map_err(|_| PositiveSplitError::Canonical)?;
+        let inner: &StandardAssetPositiveSplitPolicy<'a> = &self.policy.inner;
+        if request
+            .encode()
+            .map_err(|_| PositiveSplitError::Canonical)?
+            != request_bytes
+            || encode_fee_claim_intent(&intent).map_err(|_| PositiveSplitError::Canonical)?
+                != intent_bytes
+            || request != self.request()
+            || intent.certificate_epoch != inner.claimant.certificate_epoch
+            || intent.resource_id.domain() != public_standard_asset::ASSET_OPAQUE_DOMAIN
+            || intent.resource_id.value() != inner.known.asset.as_bytes()
+            || intent.expected_fee_output != self.object.reference
+            || intent.share_amount != self.terms.amount
+            || intent.expected_generation == 0
+            || !matches!(&intent.operation, FeeClaimOperation::FinalTransfer {leg}
+                if leg == &self.bytes)
+        {
+            return Err(PositiveSplitError::Content);
+        }
+        let prepared: PreparedFeeClaim<'a> =
+            PreparedFeeClaim::prepare(inner.workflow, &request, intent)
+                .map_err(|_| PositiveSplitError::Authority)?;
+        let generic: FeeClaimReview =
+            FeeClaimReview::build(&prepared).map_err(|_| PositiveSplitError::Review)?;
+        let generic_text: String = generic.render_text();
+        let labels = "complete_transfer=conditional_not_a_receipt\nproposed_row_digests_and_generation=not_independently_certified\n";
+        let total: usize = self
+            .review
+            .render_text()
+            .len()
+            .checked_add(labels.len())
+            .and_then(|length| length.checked_add(generic_text.len()))
+            .ok_or(PositiveSplitError::Review)?;
+        if total > MAX_POSITIVE_SPLIT_REVIEW_BYTES {
+            return Err(PositiveSplitError::Review);
+        }
+        Ok(PreparedFinalTransferClaim {
+            prepared,
+            review: format!("{}{labels}{generic_text}", self.review.render_text()),
+        })
+    }
+}
+
+/// Second immutable stage with exact historical claimant frame.
+pub struct PreparedFinalTransferClaim<'a> {
+    prepared: PreparedFeeClaim<'a>,
+    review: String,
+}
+
+impl PreparedFinalTransferClaim<'_> {
+    /// Exact outer signing frame from the retained SDK owner.
+    #[must_use]
+    pub fn signable_frame(&self) -> &[u8] {
+        self.prepared.signable_frame()
+    }
+
+    /// Bounded recognized meaning plus the generic complete-content review.
+    #[must_use]
+    pub fn review_text(&self) -> &str {
+        &self.review
+    }
+
+    /// Verifies only a signature over this exact outer frame.
+    pub fn finalize(self, signature: Vec<u8>) -> Result<Vec<u8>, PositiveSplitError> {
+        self.prepared
+            .finalize(signature)
+            .map_err(|_| PositiveSplitError::Canonical)
+    }
+}
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -43,7 +43,8 @@ Development `LocalSigner`/seed conveniences delegate to these prepared owners.
 Actual CLI local/general execution, paid Call/Instantiate/Publish, publication,
 Standard Asset paid operations, original/successor bond registration and
 successor fee claims use the same preparation and finalization. Their concrete
-signer selections differ: generic local/paid commands reject custody, ordinary
+signer selections differ: generic local commands reject custody, generic paid
+commands use custody selection only to export unsigned review preimages, ordinary
 bond and generic fee-claim commands use development signing, while the scoped
 original-genesis bond and publication/recognized Standard Asset/positive Split
 have dedicated protected routes. The
@@ -61,6 +62,19 @@ pre-sign boundaries, not key protection. Genuine registration and historical
 fee-claim controls remain inside the original owning operator recurrence; merely
 compiling those controls does not prove that expensive workflow passed.
 
+## Local/general review consumer
+
+The SDK's [`LocalExecutionReview`](../../clients/rust/src/local_execution_review.rs)
+rechecks a `PreparedLocalExecution` intent, policy digest, resolved scopes and
+exact signing frame for local/general calls. Its bounded display includes
+the signed targets, entrypoint, access rights, authorizations and opaque
+argument bytes in hex; it refuses undisplayable text or an oversized review
+instead of truncating. It returns the exact intent and signer-frame bytes for
+comparison. This is a seed-free content preview, not semantic interpretation
+of arbitrary contract arguments, durable authority, an approver, or protected
+key custody. Generic CLI routes still require their own protected signing and
+human approval flow.
+
 ## Fee-claim review consumer
 
 [Saved successor fee-claim review](fee-claim-review.md) consumes the retained
@@ -70,6 +84,24 @@ verified workflow. Displayed host-proposed economics and generic leg arguments
 are not semantic approval or current-row proof. This adds no protected fee-claim
 backend or publication-custody permission; [DR-0245](decisions/0245-saved-successor-fee-claim-review.md)
 records the exact boundary.
+
+## Generic paid intent review component
+
+`PaidExecutionReview` consumes one immutable `PreparedPaidExecution` and
+rechecks its canonical intent, fee-policy digest, sender and exact signing
+frame. Its bounded summary covers fee consent and the selected
+Publish/Instantiate/Call content; the full canonical intent, policy and frame
+remain available for exact-byte comparison. Opaque call arguments and
+authorizations are shown as canonical hex. Large content refuses review
+instead of truncating. The SDK component itself neither checks live
+fee-source currentness nor code/instance provenance. The separate
+[generic paid custody route](../guides/generic-paid-custody.md) exports an
+unsigned intent from the CLI, checks the pinned policy and current inline fee
+source at both approval and signing, then binds the exact frame to a durable,
+revocable approval. A node query is an observation at that endpoint;
+admission must still decide currentness atomically. Arbitrary contract
+semantics remain operator-reviewed opaque content, not an SDK proof of code
+safety.
 
 ## Separate M2 requirements
 

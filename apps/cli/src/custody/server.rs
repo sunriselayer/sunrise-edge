@@ -251,7 +251,10 @@ enum SigningPolicy {
     SplitMerge(Box<AssetSplitMergeTrust>),
     MintBurn(Box<AssetMintBurnTrust>),
     Create(Box<AssetCreateTrust>),
-    PositiveFeeSplit(Box<super::positive_fee_split::PositiveFeeSplitTrust>),
+    PositiveFeeSplit(
+        Box<super::positive_fee_split::PositiveFeeSplitTrust>,
+        FeeReleaseFamily,
+    ),
     FeeClaimZero(Box<FeeClaimZeroTrust>),
 }
 
@@ -269,7 +272,41 @@ pub(super) fn run_positive_fee_split(
         socket_path,
         approvals_dir,
         bounds,
-        SigningPolicy::PositiveFeeSplit(Box::new(trust)),
+        SigningPolicy::PositiveFeeSplit(Box::new(trust), FeeReleaseFamily::Split),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum FeeReleaseFamily {
+    Split,
+    FinalTransfer,
+}
+
+impl FeeReleaseFamily {
+    fn accepts(self, phase: super::positive_fee_split_wire::Phase) -> bool {
+        use super::positive_fee_split_wire::Phase;
+        match self {
+            Self::Split => matches!(phase, Phase::Leg | Phase::Claim),
+            Self::FinalTransfer => matches!(phase, Phase::FinalLeg | Phase::FinalClaim),
+        }
+    }
+}
+
+pub(super) fn run_final_fee_transfer(
+    config: CustodyConfig,
+    signer: LocalSigner,
+    socket_path: &Path,
+    approvals_dir: &Path,
+    bounds: ServeBounds,
+    trust: super::positive_fee_split::PositiveFeeSplitTrust,
+) -> Result<ServeSummary, CustodyError> {
+    run_with_policy(
+        config,
+        signer,
+        socket_path,
+        approvals_dir,
+        bounds,
+        SigningPolicy::PositiveFeeSplit(Box::new(trust), FeeReleaseFamily::FinalTransfer),
     )
 }
 
@@ -515,7 +552,7 @@ async fn handle_one_connection(
         SigningPolicy::SplitMerge(_) => asset_split_merge_wire::MAX_REQUEST_BYTES,
         SigningPolicy::MintBurn(_) => asset_mint_burn_wire::MAX_REQUEST_BYTES,
         SigningPolicy::Create(_) => asset_create_wire::MAX_REQUEST_BYTES,
-        SigningPolicy::PositiveFeeSplit(_) => super::positive_fee_split_wire::MAX_REQUEST_BYTES,
+        SigningPolicy::PositiveFeeSplit(_, _) => super::positive_fee_split_wire::MAX_REQUEST_BYTES,
         SigningPolicy::FeeClaimZero(_) => fee_claim_zero_wire::MAX_FEE_CLAIM_ZERO_REQUEST_BYTES,
     };
     let frame = match read_request_frame(&mut stream, maximum).await {
@@ -546,13 +583,18 @@ async fn handle_one_connection(
             .and_then(|request| {
                 sign_create_request(config, signer, approvals_dir, trust, &request)
             }),
-        SigningPolicy::PositiveFeeSplit(trust) => super::positive_fee_split_wire::decode(&frame)
-            .map_err(|error| refusal_status_for_wire_error(&error))
-            .and_then(|request| {
-                trust
-                    .sign_approved(signer, approvals_dir, &request)
-                    .map_err(|_| CustodyResponseStatus::NoApproval)
-            }),
+        SigningPolicy::PositiveFeeSplit(trust, family) => {
+            super::positive_fee_split_wire::decode(&frame)
+                .map_err(|error| refusal_status_for_wire_error(&error))
+                .and_then(|request| {
+                    if !family.accepts(request.phase()) {
+                        return Err(CustodyResponseStatus::UnsupportedMessageType);
+                    }
+                    trust
+                        .sign_approved(signer, approvals_dir, &request)
+                        .map_err(|_| CustodyResponseStatus::NoApproval)
+                })
+        }
         SigningPolicy::FeeClaimZero(trust) => fee_claim_zero_wire::decode(&frame)
             .map_err(|error| refusal_status_for_wire_error(&error))
             .and_then(|request| {
@@ -979,6 +1021,19 @@ mod tests {
         ArtifactParts, CONTRACT_WASM_ADMISSION_PROFILE_VERSION, CodeArtifact, PackageOrigin,
         PublicationContext, RequestId,
     };
+
+    #[test]
+    fn fee_release_workers_accept_only_their_selected_phase_family() {
+        use super::super::positive_fee_split_wire::Phase;
+        assert!(FeeReleaseFamily::Split.accepts(Phase::Leg));
+        assert!(FeeReleaseFamily::Split.accepts(Phase::Claim));
+        assert!(!FeeReleaseFamily::Split.accepts(Phase::FinalLeg));
+        assert!(!FeeReleaseFamily::Split.accepts(Phase::FinalClaim));
+        assert!(FeeReleaseFamily::FinalTransfer.accepts(Phase::FinalLeg));
+        assert!(FeeReleaseFamily::FinalTransfer.accepts(Phase::FinalClaim));
+        assert!(!FeeReleaseFamily::FinalTransfer.accepts(Phase::Leg));
+        assert!(!FeeReleaseFamily::FinalTransfer.accepts(Phase::Claim));
+    }
 
     fn config_text(publisher_hex: &str, operator_uid: u32) -> String {
         format!(
